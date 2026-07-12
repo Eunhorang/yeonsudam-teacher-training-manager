@@ -4,8 +4,9 @@
 
 **초등교사를 위한 연도별 의무연수·개인연수 관리 웹앱**
 
-[![연수담 바로 사용하기](https://img.shields.io/badge/연수담_바로_사용하기-176B54?style=for-the-badge)](https://yeonsudam-teacher-training.rn-act.chatgpt.site/)
-[![개인정보 안내](https://img.shields.io/badge/개인정보_안내-4B5563?style=for-the-badge)](https://yeonsudam-teacher-training.rn-act.chatgpt.site/privacy)
+[![GitHub 주소로 사용하기](https://img.shields.io/badge/GitHub_주소로_사용하기-176B54?style=for-the-badge&logo=github)](https://eunhorang.github.io/yeonsudam-teacher-training-manager/)
+[![로그인 동기화 버전](https://img.shields.io/badge/로그인·기기_동기화-4B5563?style=for-the-badge)](https://yeonsudam-teacher-training.rn-act.chatgpt.site/)
+[![개인정보 안내](https://img.shields.io/badge/개인정보_안내-6B7280?style=for-the-badge)](https://eunhorang.github.io/yeonsudam-teacher-training-manager/privacy.html)
 [![MIT License](https://img.shields.io/badge/License-MIT-E8B86A?style=for-the-badge)](./LICENSE)
 ![Next.js 16](https://img.shields.io/badge/Next.js-16-111827?style=for-the-badge&logo=nextdotjs)
 ![TypeScript](https://img.shields.io/badge/TypeScript-5-3178C6?style=for-the-badge&logo=typescript&logoColor=white)
@@ -23,6 +24,13 @@
 
 > **중요:** 연수 기준은 법령, 교육청 지침, 담당업무에 따라 달라질 수 있습니다. 연수담의 목록은 점검을 돕는 참고 자료이며, 최종 이수 기준은 반드시 소속 교육청과 학교의 최신 안내를 확인해 주세요.
 
+## 접속 주소
+
+- **기본 사용:** [GitHub Pages 연수담](https://eunhorang.github.io/yeonsudam-teacher-training-manager/) — 주소에 `github.io`가 들어가며, 기록은 현재 브라우저에 저장됩니다.
+- **로그인·여러 기기 동기화:** [계정 동기화 버전](https://yeonsudam-teacher-training.rn-act.chatgpt.site/) — 서버 기능이 필요한 경우에만 사용합니다.
+
+두 주소는 저장 공간이 서로 다르므로 기록이 자동으로 이동하지 않습니다. 기존 기록은 **전체 연도 JSON 백업 → 백업 파일 불러오기** 순서로 옮길 수 있습니다.
+
 ## 핵심 기능
 
 | 기능 | 할 수 있는 일 |
@@ -31,19 +39,27 @@
 | 연도별 이수 현황 | 의무연수 완료율, 이수 시간, 완료한 항목 수를 한눈에 확인합니다. |
 | 학교안전교육 합산 | 현재 연도를 포함한 최근 3개 연도의 이수 시간을 합산해 15시간 충족 여부를 보여 줍니다. |
 | 나의 연수 관리 | 사용자가 원하는 연수를 자유롭게 추가하고 상태, 시간, 기관, 날짜, 방식, 메모를 기록합니다. |
-| 로그인·기기 동기화 | 선택적으로 ChatGPT 계정에 연결해 여러 기기에서 같은 기록을 사용하며, 동시 수정 충돌을 확인합니다. |
+| 선택적 로그인·기기 동기화 | GitHub Pages에는 서버 기능이 없습니다. 여러 기기에서 같은 기록을 사용하려면 별도의 [계정 동기화 버전](https://yeonsudam-teacher-training.rn-act.chatgpt.site/)을 이용합니다. |
 | 백업과 출력 | 전체 연도 JSON 백업, 연도별 CSV 표 파일, A4 인쇄·PDF 저장을 지원합니다. |
 | 반응형 화면 | 컴퓨터와 모바일 화면에서 모두 읽기 쉽고 조작하기 편하게 표시됩니다. |
 
 ## 5분 사용법
 
-1. [연수담 바로 사용하기](https://yeonsudam-teacher-training.rn-act.chatgpt.site/)를 누릅니다.
+1. [GitHub Pages 연수담](https://eunhorang.github.io/yeonsudam-teacher-training-manager/)을 엽니다.
 2. 화면 위쪽에서 관리할 **연도**를 선택합니다.
 3. **내 조건 설정**에서 시·도교육청, 학교 유형, 고용 형태와 담당업무를 선택합니다.
 4. 연수를 이수하면 **완료 표시**를 누르고, 실제 이수 시간과 날짜를 확인해 기록합니다.
 5. 개인 연수는 **연수 추가**를 눌러 직접 등록합니다.
-6. 여러 기기에서 같은 기록을 쓰려면 **로그인·기기 동기화**를 선택합니다.
+6. 여러 기기에서 같은 기록을 쓰려면 [계정 동기화 버전](https://yeonsudam-teacher-training.rn-act.chatgpt.site/)을 엽니다.
 7. **데이터 관리 → 전체 연도 백업**을 눌러 백업 파일을 정기적으로 보관합니다.
+
+### 기존 ChatGPT 주소의 기록 옮기기
+
+1. 기존 주소의 **데이터 관리 → 전체 연도 백업**에서 JSON 파일을 내려받습니다.
+2. [GitHub Pages 연수담](https://eunhorang.github.io/yeonsudam-teacher-training-manager/)을 엽니다.
+3. **데이터 관리 → 백업 파일 불러오기**를 누릅니다.
+4. 내려받은 `YYYYMMDD_연수관리_전체백업.json` 파일을 선택합니다.
+5. 연도별 기록과 근무 조건이 보이는지 확인합니다.
 
 ### 학교안전교육 3년 합산 예시
 
@@ -55,13 +71,13 @@
 
 | 사용 상태 | 저장 위치 | 꼭 알아둘 점 |
 | --- | --- | --- |
-| 로그인하지 않음 | 현재 웹브라우저 안 | 브라우저 데이터를 삭제하거나 기기를 바꾸면 기록이 사라질 수 있습니다. JSON 백업 파일을 내려받아 보관해 주세요. |
-| ChatGPT 계정으로 로그인 | 계정 저장소와 현재 기기 | 이메일 원문 대신 일방향 변환한 식별값을 저장합니다. 학교·교육청의 외부 저장 지침을 먼저 확인해 주세요. |
+| GitHub Pages 사용 | 현재 웹브라우저 안 | 로그인 기능이 없습니다. 브라우저 데이터를 삭제하거나 기기를 바꾸면 기록이 사라질 수 있으므로 JSON 백업을 보관해 주세요. |
+| 계정 동기화 버전 사용 | 계정 저장소와 현재 기기 | 이메일 원문 대신 일방향 변환한 식별값을 저장합니다. 학교·교육청의 외부 저장 지침을 먼저 확인해 주세요. |
 
 - 학생 이름, 상담 내용, 연락처, 건강정보, 생활기록부 내용 등 **학생 개인정보를 연수명이나 메모에 입력하지 마세요.**
 - 공용 컴퓨터에서는 사용 후 로그인 상태와 기기에 남은 자료를 확인하세요.
-- 로그인 기록은 웹앱의 **데이터 관리 → 클라우드 기록 삭제**에서 삭제할 수 있습니다.
-- 자세한 내용은 [연수담 개인정보 안내](https://yeonsudam-teacher-training.rn-act.chatgpt.site/privacy)에서 확인할 수 있습니다.
+- 계정 동기화 버전의 로그인 기록은 **데이터 관리 → 클라우드 기록 삭제**에서 삭제할 수 있습니다.
+- 자세한 내용은 [GitHub Pages 개인정보 안내](https://eunhorang.github.io/yeonsudam-teacher-training-manager/privacy.html)에서 확인할 수 있습니다.
 
 ## 내 컴퓨터에서 실행하기 (Mac)
 
@@ -111,7 +127,7 @@ npm run dev
 
 브라우저에서 [http://localhost:3000](http://localhost:3000)을 열면 내 컴퓨터에서 실행 중인 연수담을 확인할 수 있습니다. 종료할 때는 터미널에서 `Control + C`를 누릅니다.
 
-로컬 개발 화면의 ChatGPT 로그인·계정 동기화는 실제 배포 사이트와 다르게 동작하거나 사용할 수 없을 수 있습니다. 일반 사용과 기기 동기화는 위의 **연수담 바로 사용하기** 링크에서 확인해 주세요.
+로컬 개발 화면의 ChatGPT 로그인·계정 동기화는 실제 배포 사이트와 다르게 동작하거나 사용할 수 없을 수 있습니다. 브라우저 저장 방식은 GitHub Pages 주소에서, 계정 동기화는 위의 별도 링크에서 확인해 주세요.
 
 > **Windows 보충:** Windows Terminal 또는 PowerShell에서도 같은 명령어를 한 줄씩 실행하면 됩니다.
 
@@ -129,6 +145,14 @@ npm test
 - 로그인하지 않은 사용자의 계정 저장소 접근이 차단되는지
 - 기기 동기화 중 수정 충돌과 기록 삭제가 안전하게 처리되는지
 
+GitHub Pages용 정적 파일만 만들려면 다음 명령어를 실행합니다.
+
+```bash
+npm run build:github-pages
+```
+
+완성된 정적 파일은 `dist-github-pages` 폴더에 만들어지며, `main` 브랜치에 반영되면 GitHub Actions가 자동으로 GitHub Pages에 배포합니다.
+
 <details>
 <summary><strong>프로젝트 파일 구조 보기</strong></summary>
 
@@ -138,12 +162,15 @@ yeonsudam-teacher-training-manager/
 ├─ components/                  # 연수 관리 화면과 내 조건 설정 창
 ├─ db/                          # 계정 동기화용 데이터 구조
 ├─ drizzle/                     # 데이터 저장소 생성 기록
+├─ github-pages/                # GitHub 주소용 정적 화면과 개인정보 안내
 ├─ lib/                         # 의무연수 목록, 맞춤 분류, 저장 규칙
 ├─ public/                      # 아이콘과 GitHub 기능 소개 이미지
 ├─ tests/                       # 자동 테스트
 ├─ worker/                      # 배포된 웹앱을 실행하는 서버 코드
+├─ .github/workflows/           # GitHub Pages 자동 배포 작업
 ├─ LICENSE                      # 공개 사용 범위를 정한 MIT 라이선스
 ├─ package.json                 # 실행 명령어와 설치 도구 목록
+├─ vite.github.config.ts        # GitHub Pages 전용 빌드 설정
 └─ README.md                    # 현재 보고 있는 사용 안내
 ```
 
@@ -174,8 +201,8 @@ yeonsudam-teacher-training-manager/
 
 ```text
 오류 메시지: 별도 오류 없이 이전 기록이 보이지 않음
-발생 원인: 로그인하지 않은 기록은 저장했던 브라우저와 기기에만 남습니다.
-해결 방법: 원래 사용한 브라우저를 확인하거나 데이터 관리에서 JSON 백업 파일을 불러오세요.
+발생 원인: GitHub 주소와 ChatGPT 주소는 저장 공간이 다르고, 비로그인 기록은 저장했던 브라우저와 기기에만 남습니다.
+해결 방법: 원래 사용한 주소와 브라우저를 확인하거나 데이터 관리에서 JSON 백업 파일을 불러오세요.
 확인할 파일: 내려받아 둔 YYYYMMDD_연수관리_전체백업.json 파일
 ```
 
