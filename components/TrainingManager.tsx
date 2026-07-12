@@ -79,6 +79,8 @@ interface TrainingManagerProps {
   account: { displayName: string; accountScope: string } | null;
   signInPath: string;
   signOutPath: string;
+  cloudSyncEnabled?: boolean;
+  privacyPath?: string;
 }
 
 type SyncStatus =
@@ -227,6 +229,8 @@ export function TrainingManager({
   account,
   signInPath,
   signOutPath,
+  cloudSyncEnabled = true,
+  privacyPath = "/privacy",
 }: TrainingManagerProps) {
   const currentYear = new Date().getFullYear();
   const [activeYear, setActiveYear] = useState(currentYear);
@@ -1533,10 +1537,14 @@ export function TrainingManager({
                   <a href={signOutPath}>로그아웃</a>
                 </div>
               </div>
-            ) : (
+            ) : cloudSyncEnabled ? (
               <a className="sign-in-button" href={signInPath}>
                 로그인·기기 동기화
               </a>
+            ) : (
+              <span className="sign-in-button" aria-label="현재 브라우저에 저장">
+                이 기기에 저장
+              </span>
             )}
             <div className="year-switcher" aria-label="관리 연도 선택">
               <button
@@ -2072,9 +2080,19 @@ export function TrainingManager({
           <span>선생님의 한 해를 빠짐없이 기록하는 작은 도구</span>
         </div>
         <p>
-          비로그인 기록은 이 기기에만, 로그인 기록은 기기와 계정 저장소에 보관됩니다.
-          이메일 원문은 기록 DB에 저장하지 않습니다. 공용 PC에서는 학생 이름 등
-          개인정보를 입력하지 마세요. <a href="/privacy">개인정보 안내</a>
+          {cloudSyncEnabled ? (
+            <>
+              비로그인 기록은 이 기기에만, 로그인 기록은 기기와 계정 저장소에
+              보관됩니다. 이메일 원문은 기록 DB에 저장하지 않습니다.
+            </>
+          ) : (
+            <>
+              이 GitHub Pages 주소의 기록은 현재 브라우저에만 저장됩니다. 중요한
+              기록은 전체 연도 백업 파일로 보관해 주세요.
+            </>
+          )}{" "}
+          공용 PC에서는 학생 이름 등 개인정보를 입력하지 마세요.{" "}
+          <a href={privacyPath}>개인정보 안내</a>
         </p>
       </footer>
 

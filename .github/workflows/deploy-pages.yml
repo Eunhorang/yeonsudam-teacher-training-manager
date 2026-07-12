@@ -1,0 +1,53 @@
+name: GitHub Pages 배포
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+concurrency:
+  group: pages
+  cancel-in-progress: false
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - name: 저장소 코드 받기
+        uses: actions/checkout@v7
+
+      - name: Node.js 준비
+        uses: actions/setup-node@v6
+        with:
+          node-version: 22.13.0
+          cache: npm
+
+      - name: 필요한 도구 설치
+        run: npm ci
+
+      - name: GitHub Pages용 정적 웹앱 만들기
+        run: npm run build:github-pages
+
+      - name: GitHub Pages 설정 확인
+        uses: actions/configure-pages@v6
+
+      - name: 배포 파일 올리기
+        uses: actions/upload-pages-artifact@v5
+        with:
+          path: dist-github-pages
+
+  deploy:
+    needs: build
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - name: GitHub Pages에 배포
+        id: deployment
+        uses: actions/deploy-pages@v5
