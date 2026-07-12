@@ -4,6 +4,8 @@ export type TrainingStatus =
   | "completed"
   | "not-applicable";
 export type TrainingKind = "required" | "personal";
+export type ProfileApplicability = "applies" | "review" | "not-applicable";
+export type ApplicabilityOverride = "applies" | "not-applicable";
 
 export const TRAINING_CATEGORIES = [
   "학생 안전",
@@ -35,11 +37,14 @@ export interface TrainingRecord {
   guidance: string;
   sourceName?: string;
   sourceUrl?: string;
+  profileApplicability?: ProfileApplicability;
+  profileReason?: string;
+  applicabilityOverride?: ApplicabilityOverride;
   createdAt: string;
   updatedAt: string;
 }
 
-interface TrainingTemplate {
+export interface TrainingTemplate {
   key: string;
   title: string;
   category: TrainingCategory;
@@ -294,9 +299,20 @@ export const DEFAULT_TRAINING_TEMPLATES: TrainingTemplate[] = [
 ];
 
 export function createDefaultTrainings(year: number): TrainingRecord[] {
-  const timestamp = new Date(`${year}-01-01T00:00:00.000Z`).toISOString();
+  return DEFAULT_TRAINING_TEMPLATES.map((template) =>
+    createTrainingFromTemplate(template, year),
+  );
+}
 
-  return DEFAULT_TRAINING_TEMPLATES.map((template) => ({
+export function createTrainingFromTemplate(
+  template: TrainingTemplate,
+  year: number,
+): TrainingRecord {
+  // 손대지 않은 기본값은 언제나 사용자가 수정한 기록보다 오래된 값으로 취급합니다.
+  // 그렇지 않으면 미래 연도의 1월 1일이 현재의 실제 수정본을 덮어쓸 수 있습니다.
+  const timestamp = new Date(0).toISOString();
+
+  return {
     id: `${year}-${template.key}`,
     templateKey: template.key,
     title: template.title,
@@ -314,9 +330,11 @@ export function createDefaultTrainings(year: number): TrainingRecord[] {
     guidance: template.guidance,
     sourceName: template.sourceName,
     sourceUrl: template.sourceUrl,
+    profileApplicability: "applies",
+    profileReason: "프로필을 설정하면 적용 대상을 더 정확히 안내합니다.",
     createdAt: timestamp,
     updatedAt: timestamp,
-  }));
+  };
 }
 
 export const STATUS_LABELS: Record<TrainingStatus, string> = {

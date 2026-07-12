@@ -4,6 +4,7 @@ import {
   type ChangeEvent,
   type CSSProperties,
   type FormEvent,
+  useCallback,
   useEffect,
   useMemo,
   useRef,
@@ -14,24 +15,42 @@ import {
   KIND_LABELS,
   STATUS_LABELS,
   TRAINING_CATEGORIES,
+  type ApplicabilityOverride,
   type TrainingCategory,
   type TrainingKind,
   type TrainingRecord,
   type TrainingStatus,
 } from "@/lib/training-data";
-
-const STORAGE_KEY = "teacher-training-manager:v2";
-const STORAGE_VERSION = 2;
+import {
+  applyProfileRecommendations,
+  copyProfileToYear,
+  createEmptyProfile,
+  EMPLOYMENT_TYPES,
+  getEducationOfficeLabel,
+  getEffectiveApplicability,
+  getSchoolSafetySummary,
+  recommendationCounts,
+  SCHOOL_TYPES,
+  type TeacherProfile,
+} from "@/lib/training-profile";
+import { ProfileModal } from "@/components/ProfileModal";
+import {
+  cloudCacheKey,
+  countTrainingState,
+  createInitialTrainingState,
+  DEVICE_STORAGE_KEY,
+  LEGACY_STORAGE_KEY,
+  mergeTrainingStates,
+  migrationMarkerKey,
+  parseTrainingState,
+  selectStoredTrainingState,
+  STATE_VERSION,
+  type TrainingAppState,
+} from "@/lib/training-state";
 
 type KindFilter = "all" | TrainingKind;
 type StatusFilter = "all" | TrainingStatus;
 type CategoryFilter = "all" | TrainingCategory;
-
-interface StoredTrainingState {
-  version: number;
-  activeYear: number;
-  recordsByYear: Record<string, TrainingRecord[]>;
-}
 
 interface TrainingFormValues {
   title: string;
@@ -47,12 +66,48 @@ interface TrainingFormValues {
   method: string;
   memo: string;
   guidance: string;
+  applicabilityOverride: "" | ApplicabilityOverride;
 }
 
 interface DeletedRecord {
   year: number;
   index: number;
   record: TrainingRecord;
+}
+
+interface TrainingManagerProps {
+  account: { displayName: string; accountScope: string } | null;
+  signInPath: string;
+  signOutPath: string;
+}
+
+type SyncStatus =
+  | "local"
+  | "loading"
+  | "saving"
+  | "saved"
+  | "offline"
+  | "conflict";
+
+interface CloudPayload {
+  exists: boolean;
+  revision: number;
+  state: TrainingAppState | null;
+  updatedAt: string | null;
+  accountScope: string;
+}
+
+interface MigrationPrompt {
+  accountScope: string;
+  cloudState: TrainingAppState | null;
+  cloudRevision: number;
+  localState: TrainingAppState;
+}
+
+interface ConflictState {
+  serverState: TrainingAppState | null;
+  serverRevision: number;
+  localState: TrainingAppState;
 }
 
 const STATUS_ORDER: Record<TrainingStatus, number> = {
@@ -83,6 +138,7 @@ function createBlankForm(year: number): TrainingFormValues {
     method: "온라인",
     memo: "",
     guidance: "",
+    applicabilityOverride: "",
   };
 }
 
@@ -103,6 +159,7 @@ function recordToForm(record: TrainingRecord): TrainingFormValues {
     method: record.method,
     memo: record.memo,
     guidance: record.guidance,
+    applicabilityOverride: record.applicabilityOverride ?? "",
   };
 }
 
@@ -120,6 +177,17 @@ function formatDate(date: string) {
   const [year, month, day] = date.split("-");
   if (!year || !month || !day) return date;
   return `${Number(month)}월 ${Number(day)}일`;
+}
+
+function syncStatusText(status: SyncStatus) {
+  return {
+    local: "이 기기에 저장",
+    loading: "계정 기록 확인 중",
+    saving: "동기화 중",
+    saved: "계정에 저장됨",
+    offline: "기기에 임시 저장됨",
+    conflict: "저장 충돌 확인 필요",
+  }[status];
 }
 
 function dueLabel(record: TrainingRecord) {
@@ -155,119 +223,19 @@ function downloadTextFile(filename: string, text: string, type: string) {
   URL.revokeObjectURL(url);
 }
 
-function normalizeImportedRecord(
-  value: unknown,
-  year: number,
-  index: number,
-): TrainingRecord | null {
-  if (!value || typeof value !== "object") return null;
-  const candidate = value as Partial<TrainingRecord>;
-  if (typeof candidate.title !== "string" || !candidate.title.trim()) {
-    return null;
-  }
-
-  const category = TRAINING_CATEGORIES.includes(
-    candidate.category as TrainingCategory,
-  )
-    ? (candidate.category as TrainingCategory)
-    : "개인 역량";
-  const status = Object.keys(STATUS_LABELS).includes(candidate.status ?? "")
-    ? (candidate.status as TrainingStatus)
-    : "planned";
-  const kind: TrainingKind =
-    candidate.kind === "required" ? "required" : "personal";
-  const timestamp = new Date().toISOString();
-
-  return {
-    id:
-      typeof candidate.id === "string" && candidate.id
-        ? candidate.id
-        : `imported-${year}-${index}-${Date.now()}`,
-    templateKey:
-      typeof candidate.templateKey === "string"
-        ? candidate.templateKey
-        : undefined,
-    title: candidate.title.trim(),
-    category,
-    kind,
-    cycle:
-      typeof candidate.cycle === "string" && candidate.cycle
-        ? candidate.cycle
-        : "자율",
-    requiredHours:
-      typeof candidate.requiredHours === "number" &&
-      candidate.requiredHours >= 0
-        ? candidate.requiredHours
-        : 0,
-    completedHours:
-      typeof candidate.completedHours === "number" &&
-      candidate.completedHours >= 0
-        ? candidate.completedHours
-        : 0,
-    status,
-    dueDate: typeof candidate.dueDate === "string" ? candidate.dueDate : "",
-    completedDate:
-      typeof candidate.completedDate === "string"
-        ? candidate.completedDate
-        : "",
-    provider:
-      typeof candidate.provider === "string" ? candidate.provider : "",
-    method: typeof candidate.method === "string" ? candidate.method : "기타",
-    memo: typeof candidate.memo === "string" ? candidate.memo : "",
-    guidance:
-      typeof candidate.guidance === "string" ? candidate.guidance : "",
-    sourceName:
-      typeof candidate.sourceName === "string"
-        ? candidate.sourceName
-        : undefined,
-    sourceUrl:
-      typeof candidate.sourceUrl === "string" ? candidate.sourceUrl : undefined,
-    createdAt:
-      typeof candidate.createdAt === "string" ? candidate.createdAt : timestamp,
-    updatedAt: timestamp,
-  };
-}
-
-function parseBackup(value: unknown): StoredTrainingState | null {
-  if (!value || typeof value !== "object") return null;
-  const candidate = value as Partial<StoredTrainingState>;
-  if (
-    !candidate.recordsByYear ||
-    typeof candidate.recordsByYear !== "object" ||
-    Array.isArray(candidate.recordsByYear)
-  ) {
-    return null;
-  }
-
-  const normalized: Record<string, TrainingRecord[]> = {};
-  for (const [yearKey, records] of Object.entries(candidate.recordsByYear)) {
-    const year = Number(yearKey);
-    if (!Number.isInteger(year) || !Array.isArray(records)) continue;
-    normalized[yearKey] = records
-      .map((record, index) => normalizeImportedRecord(record, year, index))
-      .filter((record): record is TrainingRecord => record !== null);
-  }
-
-  const availableYears = Object.keys(normalized).map(Number);
-  if (availableYears.length === 0) return null;
-  const requestedYear = Number(candidate.activeYear);
-  const activeYear = availableYears.includes(requestedYear)
-    ? requestedYear
-    : availableYears.sort((a, b) => b - a)[0];
-
-  return {
-    version: STORAGE_VERSION,
-    activeYear,
-    recordsByYear: normalized,
-  };
-}
-
-export function TrainingManager() {
+export function TrainingManager({
+  account,
+  signInPath,
+  signOutPath,
+}: TrainingManagerProps) {
   const currentYear = new Date().getFullYear();
   const [activeYear, setActiveYear] = useState(currentYear);
   const [recordsByYear, setRecordsByYear] = useState<
     Record<string, TrainingRecord[]>
   >({ [currentYear]: createDefaultTrainings(currentYear) });
+  const [profilesByYear, setProfilesByYear] = useState<
+    Record<string, TeacherProfile>
+  >({});
   const [ready, setReady] = useState(false);
   const [storageWarning, setStorageWarning] = useState("");
   const [query, setQuery] = useState("");
@@ -284,48 +252,365 @@ export function TrainingManager() {
   );
   const [toast, setToast] = useState("");
   const [lastDeleted, setLastDeleted] = useState<DeletedRecord | null>(null);
+  const [profileOpen, setProfileOpen] = useState(false);
+  const [profileForm, setProfileForm] = useState<TeacherProfile>(() =>
+    createEmptyProfile(currentYear),
+  );
+  const [syncStatus, setSyncStatus] = useState<SyncStatus>(
+    account ? "loading" : "local",
+  );
+  const [lastSyncedAt, setLastSyncedAt] = useState("");
+  const [accountScope, setAccountScope] = useState(
+    account?.accountScope ?? "",
+  );
+  const [cloudReady, setCloudReady] = useState(false);
+  const [hasCloudState, setHasCloudState] = useState(false);
+  const [syncRetry, setSyncRetry] = useState(0);
+  const [migrationPrompt, setMigrationPrompt] =
+    useState<MigrationPrompt | null>(null);
+  const [conflictState, setConflictState] = useState<ConflictState | null>(null);
   const importInputRef = useRef<HTMLInputElement>(null);
+  const cloudRevisionRef = useRef(0);
+  const lastSyncedStateRef = useRef("");
+  const cloudStartedRef = useRef(false);
+  const cloudAttemptRef = useRef(0);
+  const initialDeviceStateRef = useRef<TrainingAppState | null>(null);
+  const initialAccountCacheRef = useRef<TrainingAppState | null>(null);
+  const deleteRequestedRef = useRef(false);
+  const refreshInProgressRef = useRef(false);
+  const cloudConflictPendingRef = useRef(false);
+  const activeSaveOperationsRef = useRef(new Set<Promise<boolean>>());
+
+  const appState = useMemo<TrainingAppState>(
+    () => ({
+      version: STATE_VERSION,
+      activeYear,
+      recordsByYear,
+      profilesByYear,
+    }),
+    [activeYear, profilesByYear, recordsByYear],
+  );
+  const latestAppStateRef = useRef(appState);
+
+  useEffect(() => {
+    latestAppStateRef.current = appState;
+  }, [appState]);
+
+  const applyAppState = useCallback((state: TrainingAppState) => {
+    setActiveYear(state.activeYear);
+    setRecordsByYear(state.recordsByYear);
+    setProfilesByYear(state.profilesByYear);
+  }, []);
 
   const records = useMemo(
     () => recordsByYear[String(activeYear)] ?? [],
     [activeYear, recordsByYear],
   );
 
+  const activeProfile = useMemo(
+    () => profilesByYear[String(activeYear)] ?? createEmptyProfile(activeYear),
+    [activeYear, profilesByYear],
+  );
+
+  const schoolSafety = useMemo(
+    () => getSchoolSafetySummary(recordsByYear, activeYear, activeProfile),
+    [activeProfile, activeYear, recordsByYear],
+  );
+
+  const profileCounts = useMemo(
+    () => recommendationCounts(records, activeProfile, activeYear),
+    [activeProfile, activeYear, records],
+  );
+
+  const profileSchoolLabel =
+    SCHOOL_TYPES.find(([value]) => value === activeProfile.schoolType)?.[1] ??
+    "학교 유형 미설정";
+  const profileEmploymentLabel =
+    EMPLOYMENT_TYPES.find(
+      ([value]) => value === activeProfile.employmentType,
+    )?.[1] ?? "고용 형태 미설정";
+
+  const cacheStateOnDevice = useCallback(
+    (key: string, state: TrainingAppState) => {
+      try {
+        window.localStorage.setItem(key, JSON.stringify(state));
+        return true;
+      } catch {
+        setStorageWarning(
+          "기록을 이 기기에 보관하지 못했습니다. 데이터 관리에서 전체 연도 백업을 내려받아 주세요.",
+        );
+        return false;
+      }
+    },
+    [],
+  );
+
+  const markMigrationComplete = useCallback((scope: string) => {
+    try {
+      window.localStorage.setItem(
+        migrationMarkerKey(scope),
+        new Date().toISOString(),
+      );
+    } catch {
+      setStorageWarning(
+        "계정 연결 완료 표시를 이 기기에 저장하지 못했습니다. 기록은 계정에 정상 저장됩니다.",
+      );
+    }
+  }, []);
+
+  const saveToCloud = useCallback(
+    (
+      state: TrainingAppState,
+      baseRevision: number,
+      allowDuringRefresh = false,
+    ) => {
+      if (
+        deleteRequestedRef.current ||
+        (refreshInProgressRef.current && !allowDuringRefresh)
+      ) {
+        return Promise.resolve(false);
+      }
+      setSyncStatus(allowDuringRefresh ? "loading" : "saving");
+      const operation = (async () => {
+        try {
+          const response = await fetch("/api/training-state", {
+            method: "PUT",
+            headers: { "content-type": "application/json" },
+            body: JSON.stringify({ baseRevision, state }),
+          });
+          const result = (await response.json()) as {
+            revision?: number;
+            updatedAt?: string;
+            state?: TrainingAppState | null;
+            accountScope?: string;
+            error?: string;
+          };
+          if (response.status === 409) {
+            const serverRevision = Number(result.revision ?? 0);
+            cloudRevisionRef.current = serverRevision;
+            setHasCloudState(serverRevision > 0);
+            if (!deleteRequestedRef.current) {
+              cloudConflictPendingRef.current = true;
+              const serverState = result.state
+                ? parseTrainingState(result.state)
+                : null;
+              setConflictState({
+                serverState,
+                serverRevision,
+                localState: state,
+              });
+              setSyncStatus("conflict");
+            }
+            return false;
+          }
+          if (!response.ok || !Number.isInteger(result.revision)) {
+            throw new Error(result.error ?? "sync failed");
+          }
+          cloudRevisionRef.current = result.revision as number;
+          setHasCloudState(true);
+          lastSyncedStateRef.current = JSON.stringify(state);
+          setLastSyncedAt(result.updatedAt ?? new Date().toISOString());
+          if (
+            !deleteRequestedRef.current &&
+            !refreshInProgressRef.current
+          ) {
+            setSyncStatus("saved");
+          }
+          return true;
+        } catch {
+          if (
+            !deleteRequestedRef.current &&
+            (!refreshInProgressRef.current || allowDuringRefresh)
+          ) {
+            setSyncStatus("offline");
+          }
+          return false;
+        }
+      })();
+      activeSaveOperationsRef.current.add(operation);
+      void operation.finally(() => {
+        activeSaveOperationsRef.current.delete(operation);
+      });
+      return operation;
+    },
+    [],
+  );
+
+  const refreshFromCloud = useCallback(async () => {
+    if (
+      !account ||
+      !cloudReady ||
+      migrationPrompt ||
+      conflictState ||
+      formOpen ||
+      profileOpen
+    ) {
+      return;
+    }
+    if (refreshInProgressRef.current || cloudConflictPendingRef.current) return;
+    refreshInProgressRef.current = true;
+    setSyncStatus("loading");
+    try {
+      const pendingSaves = Array.from(activeSaveOperationsRef.current);
+      if (pendingSaves.length > 0) {
+        await Promise.allSettled(pendingSaves);
+      }
+      if (cloudConflictPendingRef.current) return;
+
+      const response = await fetch("/api/training-state", {
+        headers: { accept: "application/json" },
+      });
+      if (!response.ok) throw new Error("cloud unavailable");
+      const payload = (await response.json()) as CloudPayload;
+      const serverState = payload.state
+        ? parseTrainingState(payload.state, currentYear)
+        : null;
+      const latestState = latestAppStateRef.current;
+      const serializedLocal = JSON.stringify(latestState);
+      const hasLocalChanges = serializedLocal !== lastSyncedStateRef.current;
+
+      setAccountScope(payload.accountScope);
+      setHasCloudState(payload.revision > 0);
+
+      if (serverState && payload.revision < cloudRevisionRef.current) {
+        cloudConflictPendingRef.current = true;
+        setConflictState({
+          serverState,
+          serverRevision: payload.revision,
+          localState: latestState,
+        });
+        setSyncStatus("conflict");
+        return;
+      }
+
+      if (payload.revision === cloudRevisionRef.current && serverState) {
+        if (hasLocalChanges) {
+          const saved = await saveToCloud(
+            latestState,
+            cloudRevisionRef.current,
+            true,
+          );
+          if (!saved) {
+            if (!cloudConflictPendingRef.current) setSyncStatus("offline");
+            return;
+          }
+
+          const newestState = latestAppStateRef.current;
+          if (JSON.stringify(newestState) !== JSON.stringify(latestState)) {
+            const savedNewest = await saveToCloud(
+              newestState,
+              cloudRevisionRef.current,
+              true,
+            );
+            if (!savedNewest) {
+              if (!cloudConflictPendingRef.current) setSyncStatus("offline");
+              return;
+            }
+            if (
+              JSON.stringify(latestAppStateRef.current) !==
+              JSON.stringify(newestState)
+            ) {
+              setSyncRetry((value) => value + 1);
+            }
+          }
+          setSyncStatus("saved");
+        } else {
+          setSyncStatus("saved");
+        }
+        return;
+      }
+
+      if (!serverState || hasLocalChanges) {
+        cloudConflictPendingRef.current = true;
+        setConflictState({
+          serverState,
+          serverRevision: payload.revision,
+          localState: latestState,
+        });
+        setSyncStatus("conflict");
+        return;
+      }
+
+      applyAppState(serverState);
+      cloudRevisionRef.current = payload.revision;
+      lastSyncedStateRef.current = JSON.stringify(serverState);
+      setLastSyncedAt(payload.updatedAt ?? "");
+      setSyncStatus("saved");
+      setToast("다른 기기의 최신 기록을 불러왔습니다.");
+    } catch {
+      setSyncStatus("offline");
+    } finally {
+      refreshInProgressRef.current = false;
+    }
+  }, [
+    account,
+    applyAppState,
+    cloudReady,
+    conflictState,
+    currentYear,
+    formOpen,
+    migrationPrompt,
+    profileOpen,
+    saveToCloud,
+  ]);
+
   useEffect(() => {
     const timer = window.setTimeout(() => {
       try {
-        const saved = window.localStorage.getItem(STORAGE_KEY);
-        if (saved) {
-          const parsed = parseBackup(JSON.parse(saved));
-          if (parsed) {
-            setRecordsByYear(parsed.recordsByYear);
-            setActiveYear(parsed.activeYear);
-          } else {
-            setStorageWarning(
-              "저장된 기록을 읽지 못했습니다. 현재 화면의 기본 목록은 안전하게 유지됩니다.",
-            );
-          }
+        // v3를 먼저 읽고, v3가 손상된 경우에만 기존 v2를 다시 시도합니다.
+        const deviceSelection = selectStoredTrainingState(
+          [
+            window.localStorage.getItem(DEVICE_STORAGE_KEY),
+            window.localStorage.getItem(LEGACY_STORAGE_KEY),
+          ],
+          currentYear,
+        );
+        const accountSelection = account
+          ? selectStoredTrainingState(
+              [window.localStorage.getItem(cloudCacheKey(account.accountScope))],
+              currentYear,
+            )
+          : { state: null, hadInvalidValue: false };
+        const deviceState = deviceSelection.state;
+        const accountCache = accountSelection.state;
+        initialDeviceStateRef.current = deviceState;
+        initialAccountCacheRef.current = accountCache;
+
+        const initialState = accountCache ?? deviceState;
+        if (initialState) applyAppState(initialState);
+        if (deviceSelection.hadInvalidValue || accountSelection.hadInvalidValue) {
+          setStorageWarning(
+            initialState
+              ? "일부 저장 기록을 읽지 못해 읽을 수 있는 최신 기록을 사용합니다."
+              : "브라우저 저장 기록을 읽지 못했습니다. 백업 파일이 있다면 데이터 관리에서 불러와 주세요.",
+          );
         }
       } catch {
         setStorageWarning(
-          "브라우저 저장 기록을 읽지 못했습니다. 백업 파일이 있다면 데이터 관리에서 불러와 주세요.",
+          "브라우저가 기기 저장소 접근을 허용하지 않았습니다. 백업 내려받기를 이용해 주세요.",
         );
       } finally {
         setReady(true);
       }
     }, 0);
     return () => window.clearTimeout(timer);
-  }, []);
+  }, [account, applyAppState, currentYear]);
 
   useEffect(() => {
     if (!ready) return;
     try {
-      const state: StoredTrainingState = {
-        version: STORAGE_VERSION,
-        activeYear,
-        recordsByYear,
-      };
-      window.localStorage.setItem(STORAGE_KEY, JSON.stringify(state));
+      if (
+        account &&
+        !cloudReady &&
+        syncStatus !== "offline" &&
+        !(syncStatus === "local" && !migrationPrompt)
+      ) {
+        return;
+      }
+      const key = account
+        ? cloudCacheKey(accountScope)
+        : DEVICE_STORAGE_KEY;
+      window.localStorage.setItem(key, JSON.stringify(appState));
     } catch {
       window.setTimeout(
         () =>
@@ -335,17 +620,30 @@ export function TrainingManager() {
         0,
       );
     }
-  }, [activeYear, ready, recordsByYear]);
+  }, [account, accountScope, appState, cloudReady, migrationPrompt, ready, syncStatus]);
 
   useEffect(() => {
     if (!ready) return;
     const handleStorage = (event: StorageEvent) => {
-      if (event.key !== STORAGE_KEY || !event.newValue) return;
+      const expectedKey =
+        account && accountScope
+          ? cloudCacheKey(accountScope)
+          : DEVICE_STORAGE_KEY;
+      if (event.key !== expectedKey || !event.newValue) return;
       try {
-        const parsed = parseBackup(JSON.parse(event.newValue));
+        const parsed = parseTrainingState(JSON.parse(event.newValue), currentYear);
         if (!parsed) return;
-        setRecordsByYear(parsed.recordsByYear);
-        setActiveYear(parsed.activeYear);
+        if (
+          account &&
+          JSON.stringify(latestAppStateRef.current) !==
+            lastSyncedStateRef.current
+        ) {
+          setToast(
+            "다른 창의 변경이 있지만 현재 화면의 미저장 기록을 우선 보존했습니다.",
+          );
+          return;
+        }
+        applyAppState(parsed);
         setToast("다른 창에서 바뀐 최신 기록을 불러왔습니다.");
       } catch {
         // 다른 창의 불완전한 값은 현재 화면에 적용하지 않습니다.
@@ -353,21 +651,194 @@ export function TrainingManager() {
     };
     window.addEventListener("storage", handleStorage);
     return () => window.removeEventListener("storage", handleStorage);
-  }, [ready]);
+  }, [account, accountScope, applyAppState, cloudReady, currentYear, ready, syncStatus]);
 
   useEffect(() => {
-    if (!formOpen) return;
+    if (
+      !account ||
+      !ready ||
+      cloudReady ||
+      migrationPrompt ||
+      conflictState ||
+      cloudStartedRef.current
+    ) {
+      return;
+    }
+    cloudStartedRef.current = true;
+    const attempt = cloudAttemptRef.current;
+    cloudAttemptRef.current += 1;
+    void (async () => {
+      setSyncStatus("loading");
+      try {
+        const response = await fetch("/api/training-state", {
+          headers: { accept: "application/json" },
+        });
+        if (!response.ok) throw new Error("cloud unavailable");
+        const payload = (await response.json()) as CloudPayload;
+        const cloudState = payload.state
+          ? parseTrainingState(payload.state, currentYear)
+          : null;
+        setAccountScope(payload.accountScope);
+        cloudRevisionRef.current = payload.revision;
+        setHasCloudState(payload.revision > 0);
+
+        let marker: string | null = null;
+        try {
+          marker = window.localStorage.getItem(
+            migrationMarkerKey(payload.accountScope),
+          );
+        } catch {
+          setStorageWarning(
+            "계정 연결 여부를 이 기기에서 확인하지 못했습니다. 클라우드 기록은 정상적으로 확인합니다.",
+          );
+        }
+        const deviceState = initialDeviceStateRef.current;
+        const accountCache = initialAccountCacheRef.current;
+        const retryState = attempt > 0 ? latestAppStateRef.current : null;
+        const initialBrowserState = marker
+          ? accountCache
+          : accountCache && deviceState
+            ? mergeTrainingStates(accountCache, deviceState)
+            : accountCache ?? deviceState;
+        const migrationState = retryState ?? initialBrowserState;
+
+        if (
+          cloudState &&
+          migrationState &&
+          JSON.stringify(migrationState) !== JSON.stringify(cloudState)
+        ) {
+          setMigrationPrompt({
+            accountScope: payload.accountScope,
+            cloudState,
+            cloudRevision: payload.revision,
+            localState: migrationState,
+          });
+          setSyncStatus("local");
+          return;
+        }
+
+        if (cloudState) {
+          applyAppState(cloudState);
+          lastSyncedStateRef.current = JSON.stringify(cloudState);
+          setLastSyncedAt(payload.updatedAt ?? "");
+          setCloudReady(true);
+          setSyncStatus("saved");
+          if (!marker && migrationState) {
+            markMigrationComplete(payload.accountScope);
+          }
+          return;
+        }
+
+        if (marker) {
+          cloudConflictPendingRef.current = true;
+          setConflictState({
+            serverState: null,
+            serverRevision: 0,
+            localState:
+              retryState ??
+              accountCache ??
+              deviceState ??
+              latestAppStateRef.current,
+          });
+          setSyncStatus("conflict");
+          return;
+        }
+
+        const recoverableLocalState = migrationState;
+        if (recoverableLocalState) {
+          setMigrationPrompt({
+            accountScope: payload.accountScope,
+            cloudState: null,
+            cloudRevision: 0,
+            localState: recoverableLocalState,
+          });
+          setSyncStatus("local");
+          return;
+        }
+
+        const initial = createInitialTrainingState(currentYear);
+        applyAppState(initial);
+        const saved = await saveToCloud(initial, 0);
+        if (saved) setCloudReady(true);
+      } catch {
+        setSyncStatus("offline");
+      }
+    })();
+  }, [
+    account,
+    applyAppState,
+    cloudReady,
+    conflictState,
+    currentYear,
+    migrationPrompt,
+    markMigrationComplete,
+    ready,
+    saveToCloud,
+    syncRetry,
+  ]);
+
+  useEffect(() => {
+    if (!account || !ready || !cloudReady || migrationPrompt || conflictState) {
+      return;
+    }
+    const serialized = JSON.stringify(appState);
+    if (serialized === lastSyncedStateRef.current) return;
+    const timer = window.setTimeout(() => {
+      void saveToCloud(appState, cloudRevisionRef.current);
+    }, 900);
+    return () => window.clearTimeout(timer);
+  }, [
+    account,
+    appState,
+    cloudReady,
+    conflictState,
+    migrationPrompt,
+    ready,
+    saveToCloud,
+    syncRetry,
+  ]);
+
+  useEffect(() => {
+    const retry = () => {
+      if (!cloudReady) cloudStartedRef.current = false;
+      setSyncRetry((value) => value + 1);
+    };
+    window.addEventListener("online", retry);
+    return () => window.removeEventListener("online", retry);
+  }, [cloudReady]);
+
+  useEffect(() => {
+    if (!account || !cloudReady) return;
+    const refresh = () => void refreshFromCloud();
+    window.addEventListener("focus", refresh);
+    return () => window.removeEventListener("focus", refresh);
+  }, [account, cloudReady, refreshFromCloud]);
+
+  useEffect(() => {
+    const syncLoading = Boolean(account && syncStatus === "loading");
+    if (
+      !formOpen &&
+      !profileOpen &&
+      !migrationPrompt &&
+      !conflictState &&
+      !syncLoading
+    ) {
+      return;
+    }
     const previousOverflow = document.body.style.overflow;
     document.body.style.overflow = "hidden";
     const handleKeyDown = (event: KeyboardEvent) => {
-      if (event.key === "Escape") setFormOpen(false);
+      if (event.key === "Escape" && !migrationPrompt && !conflictState) {
+        setFormOpen(false);
+        setProfileOpen(false);
+      }
     };
     window.addEventListener("keydown", handleKeyDown);
     return () => {
       document.body.style.overflow = previousOverflow;
       window.removeEventListener("keydown", handleKeyDown);
     };
-  }, [formOpen]);
+  }, [account, conflictState, formOpen, migrationPrompt, profileOpen, syncStatus]);
 
   useEffect(() => {
     if (!toast) return;
@@ -378,12 +849,281 @@ export function TrainingManager() {
     return () => window.clearTimeout(timer);
   }, [toast]);
 
+  const importLocalRecordsToCloud = async () => {
+    if (!migrationPrompt) return;
+    const nextState = migrationPrompt.cloudState
+      ? mergeTrainingStates(
+          migrationPrompt.localState,
+          migrationPrompt.cloudState,
+        )
+      : migrationPrompt.localState;
+    applyAppState(nextState);
+    setMigrationPrompt(null);
+    cacheStateOnDevice(
+      cloudCacheKey(migrationPrompt.accountScope),
+      nextState,
+    );
+    const saved = await saveToCloud(nextState, migrationPrompt.cloudRevision);
+    if (saved) {
+      setCloudReady(true);
+      markMigrationComplete(migrationPrompt.accountScope);
+      setToast("이 브라우저의 기록을 계정에 안전하게 가져왔습니다.");
+    } else {
+      setCloudReady(false);
+    }
+  };
+
+  const keepCloudRecords = async () => {
+    if (!migrationPrompt) return;
+    const nextState =
+      migrationPrompt.cloudState ?? createInitialTrainingState(currentYear);
+    applyAppState(nextState);
+    setMigrationPrompt(null);
+    cacheStateOnDevice(
+      cloudCacheKey(migrationPrompt.accountScope),
+      nextState,
+    );
+
+    let saved = true;
+    if (migrationPrompt.cloudState) {
+      lastSyncedStateRef.current = JSON.stringify(nextState);
+      setSyncStatus("saved");
+      setCloudReady(true);
+    } else {
+      saved = await saveToCloud(nextState, 0);
+      setCloudReady(saved);
+    }
+    if (saved) {
+      markMigrationComplete(migrationPrompt.accountScope);
+      setToast(
+        migrationPrompt.cloudState
+          ? "계정에 저장된 기록을 불러왔습니다. 기기 기록은 그대로 보관됩니다."
+          : "새 계정 기록을 만들었습니다. 기존 기기 기록은 그대로 보관됩니다.",
+      );
+    }
+  };
+
+  const useServerConflictVersion = () => {
+    if (!conflictState) return;
+    cloudConflictPendingRef.current = false;
+    const serverExists = Boolean(conflictState.serverState);
+    const nextState =
+      conflictState.serverState ?? createInitialTrainingState(currentYear);
+    applyAppState(nextState);
+    cloudRevisionRef.current = conflictState.serverRevision;
+    setHasCloudState(serverExists && conflictState.serverRevision > 0);
+    lastSyncedStateRef.current = serverExists
+      ? JSON.stringify(nextState)
+      : "";
+    setConflictState(null);
+    if (serverExists) {
+      setCloudReady(true);
+      setSyncStatus("saved");
+      cacheStateOnDevice(cloudCacheKey(accountScope), nextState);
+      markMigrationComplete(accountScope);
+      setToast("클라우드에 저장된 최신 기록을 사용합니다.");
+      return;
+    }
+
+    // 다른 기기에서 삭제한 클라우드 상태를 선택했으므로 자동 재생성하지 않습니다.
+    setCloudReady(false);
+    setSyncStatus("local");
+    initialAccountCacheRef.current = nextState;
+    cacheStateOnDevice(cloudCacheKey(accountScope), nextState);
+    try {
+      window.localStorage.removeItem(migrationMarkerKey(accountScope));
+    } catch {
+      setStorageWarning(
+        "계정 연결 표시를 이 기기에서 정리하지 못했습니다. 현재 화면은 클라우드 삭제 상태를 사용합니다.",
+      );
+    }
+    setToast("클라우드의 삭제 상태를 사용합니다. 새 기록은 이 기기에 저장됩니다.");
+  };
+
+  const resolveWithLocalVersion = async () => {
+    if (!conflictState) return;
+    const localState = conflictState.localState;
+    const revision = conflictState.serverRevision;
+    cloudConflictPendingRef.current = false;
+    setConflictState(null);
+    const saved = await saveToCloud(localState, revision);
+    if (saved) {
+      applyAppState(localState);
+      setCloudReady(true);
+      setHasCloudState(true);
+      cacheStateOnDevice(cloudCacheKey(accountScope), localState);
+      markMigrationComplete(accountScope);
+      setToast("이 기기의 기록으로 클라우드를 다시 저장했습니다.");
+    }
+  };
+
+  const openProfileSettings = () => {
+    setProfileForm({ ...activeProfile, duties: [...activeProfile.duties] });
+    setProfileOpen(true);
+  };
+
+  const copyPreviousProfile = () => {
+    const previous = profilesByYear[String(activeYear - 1)];
+    if (!previous?.configured) {
+      setToast(`${activeYear - 1}년에 저장된 근무 조건이 없습니다.`);
+      return;
+    }
+    setProfileForm(copyProfileToYear(previous, activeYear));
+    setToast("전년도 근무 조건을 불러왔습니다. 내용을 확인해 주세요.");
+  };
+
+  const saveProfile = (event: FormEvent<HTMLFormElement>) => {
+    event.preventDefault();
+    if (
+      !profileForm.educationOffice ||
+      !profileForm.schoolType ||
+      !profileForm.employmentType
+    ) {
+      setToast("교육청, 학교 유형, 고용 형태를 모두 선택해 주세요.");
+      return;
+    }
+    const savedProfile: TeacherProfile = {
+      ...profileForm,
+      year: activeYear,
+      configured: true,
+      updatedAt: new Date().toISOString(),
+    };
+    const evaluated = applyProfileRecommendations(
+      records,
+      savedProfile,
+      activeYear,
+      savedProfile.updatedAt,
+    );
+    setProfilesByYear((previous) => ({
+      ...previous,
+      [activeYear]: savedProfile,
+    }));
+    updateActiveRecords(() => evaluated);
+    setProfileOpen(false);
+    const counts = recommendationCounts(evaluated, savedProfile, activeYear);
+    setToast(
+      `맞춤 분류 완료: 기본 적용 ${counts.applies}개, 확인 필요 ${counts.review}개, 기본 제외 ${counts["not-applicable"]}개`,
+    );
+  };
+
+  const deleteCloudRecords = async () => {
+    if (!account || cloudRevisionRef.current < 1) return;
+    const confirmation = window.prompt(
+      "클라우드 기록을 삭제하려면 ‘클라우드 기록 삭제’를 입력해 주세요. 이 기기의 기록은 남습니다.",
+    );
+    if (confirmation !== "클라우드 기록 삭제") return;
+    deleteRequestedRef.current = true;
+    setSyncStatus("loading");
+    let deleteConflictDetected = false;
+    try {
+      const pendingSaves = Array.from(activeSaveOperationsRef.current);
+      if (pendingSaves.length > 0) {
+        await Promise.allSettled(pendingSaves);
+      }
+      const baseRevision = cloudRevisionRef.current;
+      if (baseRevision < 1) throw new Error("cloud already deleted");
+      const response = await fetch("/api/training-state", {
+        method: "DELETE",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ baseRevision }),
+      });
+      if (!response.ok) {
+        if (response.status === 409) {
+          const result = (await response.json()) as {
+            revision?: number;
+            state?: TrainingAppState | null;
+          };
+          const serverRevision = Number(result.revision ?? 0);
+          cloudRevisionRef.current = serverRevision;
+          setHasCloudState(serverRevision > 0);
+          cloudConflictPendingRef.current = true;
+          setConflictState({
+            serverState: result.state
+              ? parseTrainingState(result.state, currentYear)
+              : null,
+            serverRevision,
+            localState: latestAppStateRef.current,
+          });
+          setSyncStatus("conflict");
+          deleteConflictDetected = true;
+        }
+        throw new Error("delete failed");
+      }
+
+      // 서버 삭제 성공 상태를 먼저 반영하고, 기기 저장소 오류는 별도로 안내합니다.
+      const deviceState = latestAppStateRef.current;
+      initialAccountCacheRef.current = deviceState;
+      cloudRevisionRef.current = 0;
+      setHasCloudState(false);
+      lastSyncedStateRef.current = "";
+      setConflictState(null);
+      cloudConflictPendingRef.current = false;
+      setCloudReady(false);
+      setSyncStatus("local");
+      cloudStartedRef.current = true;
+
+      const deviceSaved = cacheStateOnDevice(
+        cloudCacheKey(accountScope),
+        deviceState,
+      );
+      if (accountScope) {
+        try {
+          window.localStorage.removeItem(migrationMarkerKey(accountScope));
+        } catch {
+          setStorageWarning(
+            "클라우드 기록은 삭제했지만 이 기기의 계정 연결 표시를 정리하지 못했습니다.",
+          );
+        }
+      }
+      setToast(
+        deviceSaved
+          ? "클라우드 기록을 삭제했습니다. 현재 기록은 이 기기에만 남아 있습니다."
+          : "클라우드 기록은 삭제했습니다. 현재 기록은 백업 파일로 내려받아 주세요.",
+      );
+    } catch {
+      if (deleteConflictDetected) {
+        setToast(
+          "다른 기기의 변경을 먼저 확인한 뒤 클라우드 삭제를 다시 시도해 주세요.",
+        );
+      } else {
+        const hasUnsyncedChanges =
+          JSON.stringify(latestAppStateRef.current) !==
+          lastSyncedStateRef.current;
+        setSyncStatus("offline");
+        if (hasUnsyncedChanges) {
+          setSyncRetry((value) => value + 1);
+        }
+        setToast(
+          "클라우드 기록을 삭제하지 못했습니다. 현재 기록은 이 기기에 보관했습니다.",
+        );
+      }
+    } finally {
+      deleteRequestedRef.current = false;
+    }
+  };
+
+  const requestCloudRetry = () => {
+    if (!account) return;
+    if (cloudReady) {
+      void refreshFromCloud();
+      return;
+    }
+    cloudStartedRef.current = false;
+    setSyncRetry((value) => value + 1);
+  };
+
   const metrics = useMemo(() => {
     const applicableRequired = records.filter(
       (record) =>
-        record.kind === "required" && record.status !== "not-applicable",
+        record.kind === "required" &&
+        record.status !== "not-applicable" &&
+        getEffectiveApplicability(record) === "applies",
     );
-    const completedRequired = applicableRequired.filter(requirementMet);
+    const completedRequired = applicableRequired.filter((record) =>
+      record.templateKey === "school-safety" && schoolSafety.mode === "rolling"
+        ? schoolSafety.requirementMet
+        : requirementMet(record),
+    );
     const totalHours = records.reduce(
       (sum, record) => sum + record.completedHours,
       0,
@@ -408,9 +1148,14 @@ export function TrainingManager() {
       inProgress,
       totalHours,
       completedPersonal,
+      reviewCount: records.filter(
+        (record) =>
+          record.kind === "required" &&
+          getEffectiveApplicability(record) === "review",
+      ).length,
       rate,
     };
-  }, [records]);
+  }, [records, schoolSafety]);
 
   const filteredRecords = useMemo(() => {
     const normalizedQuery = query.trim().toLocaleLowerCase("ko-KR");
@@ -452,7 +1197,14 @@ export function TrainingManager() {
     if (!Number.isInteger(year) || year < 2000 || year > 2100) return;
     setRecordsByYear((previous) => {
       if (previous[String(year)]) return previous;
-      return { ...previous, [year]: createDefaultTrainings(year) };
+      const defaults = createDefaultTrainings(year);
+      const profile = profilesByYear[String(year)];
+      return {
+        ...previous,
+        [year]: profile?.configured
+          ? applyProfileRecommendations(defaults, profile, year)
+          : defaults,
+      };
     });
     setActiveYear(year);
     setQuery("");
@@ -506,7 +1258,7 @@ export function TrainingManager() {
       id:
         editingRecord?.id ??
         globalThis.crypto?.randomUUID?.() ??
-        `training-${Date.now()}`,
+        `training-${timestamp}`,
       templateKey: editingRecord?.templateKey,
       title: form.title.trim(),
       category: form.category,
@@ -523,6 +1275,9 @@ export function TrainingManager() {
       guidance: form.guidance.trim(),
       sourceName: editingRecord?.sourceName,
       sourceUrl: editingRecord?.sourceUrl,
+      profileApplicability: editingRecord?.profileApplicability,
+      profileReason: editingRecord?.profileReason,
+      applicabilityOverride: form.applicabilityOverride || undefined,
       createdAt: editingRecord?.createdAt ?? timestamp,
       updatedAt: timestamp,
     };
@@ -539,6 +1294,16 @@ export function TrainingManager() {
   };
 
   const toggleCompleted = (record: TrainingRecord) => {
+    if (record.templateKey === "school-safety") {
+      openEditForm(record);
+      setToast("해당 연도에 실제로 이수한 시간을 입력하면 최근 3년 합계가 자동 계산됩니다.");
+      return;
+    }
+    if (getEffectiveApplicability(record) === "not-applicable") {
+      openEditForm(record);
+      setToast("현재 프로필에서 기본 제외된 항목입니다. 적용 대상을 먼저 변경해 주세요.");
+      return;
+    }
     const completing = record.status !== "completed";
     updateActiveRecords((current) =>
       current.map((item) =>
@@ -582,7 +1347,13 @@ export function TrainingManager() {
   };
 
   const restoreMissingDefaults = () => {
-    const defaults = createDefaultTrainings(activeYear);
+    const defaults = activeProfile.configured
+      ? applyProfileRecommendations(
+          createDefaultTrainings(activeYear),
+          activeProfile,
+          activeYear,
+        )
+      : createDefaultTrainings(activeYear);
     const existingKeys = new Set(records.map((record) => record.templateKey));
     const missing = defaults.filter(
       (record) => record.templateKey && !existingKeys.has(record.templateKey),
@@ -635,14 +1406,9 @@ export function TrainingManager() {
 
   const exportBackup = () => {
     const date = todayForInput().replaceAll("-", "");
-    const data: StoredTrainingState = {
-      version: STORAGE_VERSION,
-      activeYear,
-      recordsByYear,
-    };
     downloadTextFile(
       `${date}_연수관리_전체백업.json`,
-      JSON.stringify(data, null, 2),
+      JSON.stringify(appState, null, 2),
       "application/json;charset=utf-8",
     );
     setToast("전체 연도 백업 파일을 저장했습니다.");
@@ -697,10 +1463,9 @@ export function TrainingManager() {
     event.target.value = "";
     if (!file) return;
     try {
-      const parsed = parseBackup(JSON.parse(await file.text()));
+      const parsed = parseTrainingState(JSON.parse(await file.text()), currentYear);
       if (!parsed) throw new Error("invalid backup");
-      setRecordsByYear(parsed.recordsByYear);
-      setActiveYear(parsed.activeYear);
+      applyAppState(parsed);
       setToast(
         `${Object.keys(parsed.recordsByYear).length}개 연도의 백업을 불러왔습니다.`,
       );
@@ -721,7 +1486,10 @@ export function TrainingManager() {
   } as CSSProperties;
 
   return (
-    <div className="training-app">
+    <div
+      className="training-app"
+      aria-busy={account && syncStatus === "loading" ? true : undefined}
+    >
       <header className="site-header no-print">
         <div className="header-inner">
           <a className="brand" href="#top" aria-label="연수담 처음으로">
@@ -735,6 +1503,41 @@ export function TrainingManager() {
           </a>
 
           <div className="header-actions">
+            <button
+              className="profile-button"
+              type="button"
+              onClick={openProfileSettings}
+            >
+              <span aria-hidden="true">◎</span>
+              <span>
+                <small>{activeYear}년 근무 조건</small>
+                <strong>
+                  {activeProfile.configured
+                    ? getEducationOfficeLabel(activeProfile.educationOffice)
+                    : "맞춤 목록 설정"}
+                </strong>
+              </span>
+            </button>
+            {account ? (
+              <div className={`account-control sync-${syncStatus}`}>
+                <button
+                  type="button"
+                  onClick={requestCloudRetry}
+                  title={lastSyncedAt ? `마지막 저장 ${formatDate(lastSyncedAt.slice(0, 10))}` : undefined}
+                >
+                  <span aria-hidden="true">●</span>
+                  {syncStatusText(syncStatus)}
+                </button>
+                <div>
+                  <strong>{account.displayName}</strong>
+                  <a href={signOutPath}>로그아웃</a>
+                </div>
+              </div>
+            ) : (
+              <a className="sign-in-button" href={signInPath}>
+                로그인·기기 동기화
+              </a>
+            )}
             <div className="year-switcher" aria-label="관리 연도 선택">
               <button
                 type="button"
@@ -790,7 +1593,11 @@ export function TrainingManager() {
             </p>
             <div className="local-badge">
               <span aria-hidden="true">●</span>
-              기록은 이 브라우저에만 저장됩니다
+              {account
+                ? cloudReady
+                  ? "로그인 계정과 이 기기에 함께 저장됩니다"
+                  : "현재 기록은 이 기기에 안전하게 보관됩니다"
+                : "로그인 전에는 이 브라우저에만 저장됩니다"}
             </div>
           </div>
 
@@ -863,6 +1670,71 @@ export function TrainingManager() {
           </article>
         </section>
 
+        <section className="personalization-grid no-print" aria-label="맞춤 관리 요약">
+          <article className="profile-summary-card">
+            <div className="profile-summary-heading">
+              <span className="summary-icon" aria-hidden="true">◎</span>
+              <div>
+                <small>{activeYear}년 맞춤 목록</small>
+                <h2>
+                  {activeProfile.configured
+                    ? getEducationOfficeLabel(activeProfile.educationOffice)
+                    : "내 근무 조건을 설정해 주세요"}
+                </h2>
+              </div>
+            </div>
+            {activeProfile.configured ? (
+              <>
+                <p>{profileSchoolLabel} · {profileEmploymentLabel}</p>
+                <div className="recommendation-counts">
+                  <span><b>{profileCounts.applies}</b> 기본 적용</span>
+                  <span><b>{profileCounts.review}</b> 확인 필요</span>
+                  <span><b>{profileCounts["not-applicable"]}</b> 기본 제외</span>
+                </div>
+              </>
+            ) : (
+              <p>교육청·학교 유형·고용 형태·담당업무에 맞춰 연수 목록을 분류합니다.</p>
+            )}
+            <button type="button" onClick={openProfileSettings}>
+              {activeProfile.configured ? "근무 조건 수정" : "지금 설정하기"}
+            </button>
+          </article>
+
+          <article className="school-safety-card">
+            <div className="safety-card-heading">
+              <div>
+                <small>최근 3개 연도 자동 합산</small>
+                <h2>학교안전교육</h2>
+              </div>
+              <strong className={schoolSafety.requirementMet ? "met" : ""}>
+                {formatHours(schoolSafety.totalHours)} / 15시간
+              </strong>
+            </div>
+            <div className="safety-progress" aria-hidden="true">
+              <span
+                style={{
+                  width: `${Math.min(100, (schoolSafety.totalHours / 15) * 100)}%`,
+                }}
+              />
+            </div>
+            <div className="safety-years">
+              {schoolSafety.byYear.map((item) => (
+                <button key={item.year} type="button" onClick={() => setYear(item.year)}>
+                  <span>{item.year}년</span>
+                  <strong>{formatHours(item.completedHours)}</strong>
+                </button>
+              ))}
+            </div>
+            <p>
+              {schoolSafety.mode === "contract-check"
+                ? "기간제 교원은 계약기간에 따라 학기별 기준이 적용될 수 있으므로 학교 계획을 확인하세요."
+                : schoolSafety.requirementMet
+                  ? `${schoolSafety.startYear}~${schoolSafety.endYear}년 기준 15시간을 충족했습니다.`
+                  : `${formatHours(schoolSafety.remainingHours)}을 더 이수하면 최근 3년 기준을 충족합니다.`}
+            </p>
+          </article>
+        </section>
+
         {storageWarning ? (
           <div className="storage-warning" role="alert">
             <strong>저장 상태를 확인해 주세요.</strong>
@@ -902,6 +1774,14 @@ export function TrainingManager() {
                 <button type="button" onClick={restoreMissingDefaults}>
                   빠진 기본 목록 복원
                 </button>
+                {account && hasCloudState ? (
+                  <>
+                    <hr />
+                    <button className="danger-menu-item" type="button" onClick={deleteCloudRecords}>
+                      클라우드 기록 삭제
+                    </button>
+                  </>
+                ) : null}
               </div>
             </details>
             <input
@@ -1005,7 +1885,12 @@ export function TrainingManager() {
                 <span>관리</span>
               </div>
               {filteredRecords.map((record) => {
-                const met = requirementMet(record);
+                const applicability = getEffectiveApplicability(record);
+                const met =
+                  record.templateKey === "school-safety" &&
+                  schoolSafety.mode === "rolling"
+                    ? schoolSafety.requirementMet
+                    : requirementMet(record);
                 const shortOnHours =
                   record.status === "completed" &&
                   record.requiredHours > 0 &&
@@ -1024,7 +1909,7 @@ export function TrainingManager() {
 
                 return (
                   <article
-                    className={`training-row status-${record.status}`}
+                    className={`training-row status-${record.status} applicability-${applicability}`}
                     key={record.id}
                   >
                     <div className="row-status">
@@ -1041,7 +1926,11 @@ export function TrainingManager() {
                         <span aria-hidden="true">✓</span>
                       </button>
                       <span className={`status-label ${record.status}`}>
-                        {STATUS_LABELS[record.status]}
+                        {record.status === "planned" && applicability === "review"
+                          ? "확인 필요"
+                          : record.status === "planned" && applicability === "not-applicable"
+                            ? "기본 제외"
+                            : STATUS_LABELS[record.status]}
                       </span>
                     </div>
 
@@ -1051,6 +1940,15 @@ export function TrainingManager() {
                           {KIND_LABELS[record.kind]}
                         </span>
                         <span className="category-tag">{record.category}</span>
+                        {record.kind === "required" ? (
+                          <span className={`applicability-tag ${applicability}`}>
+                            {applicability === "applies"
+                              ? "맞춤 적용"
+                              : applicability === "review"
+                                ? "학교 확인"
+                                : "프로필 제외"}
+                          </span>
+                        ) : null}
                       </div>
                       <h3>{record.title}</h3>
                       <div className="row-details">
@@ -1062,6 +1960,11 @@ export function TrainingManager() {
                       </div>
                       {record.guidance ? (
                         <p className="guidance-text">{record.guidance}</p>
+                      ) : null}
+                      {record.profileReason && record.kind === "required" ? (
+                        <p className={`profile-reason ${applicability}`}>
+                          {record.profileReason}
+                        </p>
                       ) : null}
                       {shortOnHours ? (
                         <p className="hours-warning" role="status">
@@ -1075,7 +1978,10 @@ export function TrainingManager() {
                     <div className="row-hours">
                       <strong>{record.cycle}</strong>
                       <span>
-                        {record.requiredHours > 0
+                        {record.templateKey === "school-safety" &&
+                        schoolSafety.mode === "rolling"
+                          ? `${formatHours(schoolSafety.totalHours)} / 15시간 (최근 3년)`
+                          : record.requiredHours > 0
                           ? `${formatHours(record.completedHours)} / ${formatHours(record.requiredHours)}`
                           : record.completedHours > 0
                             ? `${formatHours(record.completedHours)} 이수`
@@ -1166,11 +2072,105 @@ export function TrainingManager() {
           <span>선생님의 한 해를 빠짐없이 기록하는 작은 도구</span>
         </div>
         <p>
-          입력한 자료는 별도 서버로 전송되지 않습니다. 브라우저 데이터 삭제나
-          기기 변경에 대비해 정기적으로 백업하고, 공용 PC에서는 학생 이름 등
-          개인정보를 입력하지 마세요.
+          비로그인 기록은 이 기기에만, 로그인 기록은 기기와 계정 저장소에 보관됩니다.
+          이메일 원문은 기록 DB에 저장하지 않습니다. 공용 PC에서는 학생 이름 등
+          개인정보를 입력하지 마세요. <a href="/privacy">개인정보 안내</a>
         </p>
       </footer>
+
+      <ProfileModal
+        open={profileOpen}
+        year={activeYear}
+        value={profileForm}
+        hasPreviousProfile={Boolean(profilesByYear[String(activeYear - 1)]?.configured)}
+        onChange={setProfileForm}
+        onClose={() => setProfileOpen(false)}
+        onCopyPrevious={copyPreviousProfile}
+        onSave={saveProfile}
+      />
+
+      {account && syncStatus === "loading" && !migrationPrompt ? (
+        <div className="modal-backdrop no-print sync-loading-backdrop" role="status" aria-live="polite">
+          <section className="training-modal sync-loading-card">
+            <div className="sync-loading-mark" aria-hidden="true">담</div>
+            <strong>계정에 저장된 연수 기록을 확인하고 있어요.</strong>
+            <span>확인이 끝나면 안전하게 수정할 수 있습니다.</span>
+          </section>
+        </div>
+      ) : null}
+
+      {migrationPrompt ? (
+        <div className="modal-backdrop no-print" role="presentation">
+          <section className="training-modal sync-modal" role="dialog" aria-modal="true" aria-labelledby="migration-title">
+            <div className="modal-header">
+              <div>
+                <span>SAFE FIRST SYNC</span>
+                <h2 id="migration-title">기존 기록을 계정에 연결할까요?</h2>
+              </div>
+            </div>
+            <div className="modal-body">
+              <div className="sync-illustration" aria-hidden="true">↗</div>
+              <p>
+                이 브라우저에는 <strong>{countTrainingState(migrationPrompt.localState).years}개 연도, {countTrainingState(migrationPrompt.localState).records}개 기록</strong>이 있습니다.
+                {migrationPrompt.cloudState ? (
+                  <> 계정에는 <strong>{countTrainingState(migrationPrompt.cloudState).years}개 연도, {countTrainingState(migrationPrompt.cloudState).records}개 기록</strong>이 있습니다.</>
+                ) : (
+                  <> 계정 저장소는 아직 비어 있습니다.</>
+                )}
+              </p>
+              <div className="sync-choice-grid">
+                <button type="button" onClick={() => void importLocalRecordsToCloud()}>
+                  <strong>기기 기록 가져오기</strong>
+                  <span>{migrationPrompt.cloudState ? "서로 다른 기록을 안전하게 합칩니다." : "현재 기록을 계정에 처음 저장합니다."}</span>
+                </button>
+                <button type="button" onClick={() => void keepCloudRecords()}>
+                  <strong>{migrationPrompt.cloudState ? "계정 기록 사용" : "새 계정 기록으로 시작"}</strong>
+                  <span>기존 기기 기록은 삭제하지 않고 그대로 보관합니다.</span>
+                </button>
+              </div>
+              <p className="privacy-small">다른 계정으로 자동 전송하지 않도록 계정마다 한 번씩 직접 선택받습니다.</p>
+            </div>
+          </section>
+        </div>
+      ) : null}
+
+      {conflictState ? (
+        <div className="modal-backdrop no-print" role="presentation">
+          <section className="training-modal sync-modal" role="dialog" aria-modal="true" aria-labelledby="conflict-title">
+            <div className="modal-header">
+              <div>
+                <span>SYNC CONFLICT</span>
+                <h2 id="conflict-title">다른 기기에서 기록이 변경됐어요.</h2>
+              </div>
+            </div>
+            <div className="modal-body">
+              <p>어느 기록을 사용할지 직접 선택해 주세요. 자동으로 덮어쓰지 않습니다.</p>
+              <div className="sync-choice-grid">
+                <button type="button" onClick={useServerConflictVersion}>
+                  <strong>
+                    {conflictState.serverState
+                      ? "클라우드 최신 기록 사용"
+                      : "클라우드 삭제 상태 사용"}
+                  </strong>
+                  <span>
+                    {conflictState.serverState
+                      ? "다른 기기에서 먼저 저장한 내용을 불러옵니다."
+                      : "계정에는 다시 올리지 않고 이 기기에서 새로 시작합니다."}
+                  </span>
+                </button>
+                <button type="button" onClick={() => void resolveWithLocalVersion()}>
+                  <strong>이 기기 기록으로 저장</strong>
+                  <span>
+                    {conflictState.serverState
+                      ? "현재 화면의 전체 기록으로 클라우드를 바꿉니다."
+                      : "현재 기기 기록을 계정에 다시 저장합니다."}
+                  </span>
+                </button>
+              </div>
+            </div>
+          </section>
+        </div>
+      ) : null}
 
       {formOpen ? (
         <div
@@ -1275,6 +2275,26 @@ export function TrainingManager() {
                       ))}
                     </select>
                   </label>
+                  {form.kind === "required" ? (
+                    <label className="field">
+                      <span>적용 대상</span>
+                      <select
+                        value={form.applicabilityOverride}
+                        onChange={(event) =>
+                          setForm((previous) => ({
+                            ...previous,
+                            applicabilityOverride: event.target.value as
+                              | ""
+                              | ApplicabilityOverride,
+                          }))
+                        }
+                      >
+                        <option value="">근무 조건 추천 사용</option>
+                        <option value="applies">이수 대상임</option>
+                        <option value="not-applicable">해당 없음</option>
+                      </select>
+                    </label>
+                  ) : null}
                   <label className="field">
                     <span>이수 주기</span>
                     <input
