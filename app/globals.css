@@ -1169,7 +1169,7 @@ a {
   gap: 4px 14px;
   margin-top: 7px;
   color: #7d8a84;
-  font-size: 11px;
+  font-size: 12px;
 }
 
 .row-details span {
@@ -1195,7 +1195,7 @@ a {
 .hours-warning,
 .profile-reason {
   margin: 7px 0 0;
-  font-size: 11px;
+  font-size: 12px;
   line-height: 1.5;
 }
 
@@ -1246,7 +1246,7 @@ a {
 .row-hours > span {
   margin-top: 4px;
   color: #85918b;
-  font-size: 10px;
+  font-size: 12px;
 }
 
 .mini-progress {
@@ -1279,7 +1279,7 @@ a {
 .row-due small {
   margin-top: 3px;
   color: #88948e;
-  font-size: 10px;
+  font-size: 12px;
 }
 
 .row-actions {
@@ -1293,14 +1293,14 @@ a {
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  min-height: 36px;
+  min-height: 40px;
   padding: 0 10px;
   border: 1px solid var(--line);
   border-radius: 9px;
   background: #fff;
   color: #5e6c65;
   text-decoration: none;
-  font-size: 11px;
+  font-size: 12px;
   font-weight: 700;
 }
 
@@ -1450,7 +1450,7 @@ a {
 
 .site-footer span,
 .site-footer p {
-  font-size: 10px;
+  font-size: 12px;
 }
 
 .site-footer p {
@@ -1552,7 +1552,7 @@ a {
 .profile-privacy-note p {
   margin: 2px 0 0;
   color: #708078;
-  font-size: 10px;
+  font-size: 12px;
 }
 
 .copy-profile-button {
@@ -1583,7 +1583,7 @@ a {
 .duty-fieldset legend small {
   margin-left: 5px;
   color: #94a099;
-  font-size: 9px;
+  font-size: 11px;
   font-weight: 600;
 }
 
@@ -1603,7 +1603,7 @@ a {
   border-radius: 10px;
   background: #fff;
   color: #617069;
-  font-size: 10px;
+  font-size: 12px;
   font-weight: 650;
   cursor: pointer;
 }
@@ -1612,6 +1612,11 @@ a {
   border-color: #8dbbaa;
   background: #edf7f2;
   color: var(--primary);
+}
+
+.duty-options label:focus-within {
+  outline: 3px solid rgba(32, 126, 101, 0.34);
+  outline-offset: 2px;
 }
 
 .duty-options input {
@@ -1654,6 +1659,18 @@ a {
   color: #65736c;
   font-size: 13px;
   line-height: 1.7;
+}
+
+.import-confirm-modal .modal-body > p strong {
+  color: var(--ink);
+}
+
+.import-account-warning {
+  padding: 10px 12px;
+  border-radius: 10px;
+  background: var(--amber-soft);
+  color: #80531d !important;
+  font-weight: 700;
 }
 
 .sync-illustration {
@@ -2488,8 +2505,9 @@ a {
 
   .row-actions a,
   .row-actions button {
-    min-height: 34px;
-    padding: 0 9px;
+    min-width: 44px;
+    min-height: 44px;
+    padding: 0 10px;
   }
 
   .mini-progress {
@@ -2627,10 +2645,6 @@ a {
   }
 
   .kind-tabs button span {
-    display: none;
-  }
-
-  .row-actions a {
     display: none;
   }
 

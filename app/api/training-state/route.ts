@@ -3,6 +3,7 @@ import { ensureTrainingStateSchema, getD1 } from "@/db";
 import {
   parseTrainingState,
   STATE_VERSION,
+  trainingStateLimitError,
   type TrainingAppState,
 } from "@/lib/training-state";
 import { userKeyFromEmail } from "@/lib/user-key.server";
@@ -81,6 +82,14 @@ export async function PUT(request: Request) {
     (body.state as { version?: unknown }).version !== STATE_VERSION
   ) {
     return apiJson({ error: "지원하지 않는 기록 형식입니다." }, { status: 422 });
+  }
+
+  const limitError = trainingStateLimitError(body.state);
+  if (limitError) {
+    return apiJson(
+      { error: `${limitError} 연도별 기록 수를 줄인 뒤 다시 저장해 주세요.` },
+      { status: 413 },
+    );
   }
 
   const state = parseTrainingState(body.state);

@@ -34,17 +34,21 @@ import {
   type TeacherProfile,
 } from "@/lib/training-profile";
 import { ProfileModal } from "@/components/ProfileModal";
+import { useDialogFocus } from "@/components/useDialogFocus";
 import {
   cloudCacheKey,
   countTrainingState,
   createInitialTrainingState,
   DEVICE_STORAGE_KEY,
   LEGACY_STORAGE_KEY,
+  MAX_RECORDS_PER_YEAR,
   mergeTrainingStates,
   migrationMarkerKey,
+  parseTrainingBackupState,
   parseTrainingState,
   selectStoredTrainingState,
   STATE_VERSION,
+  trainingStateLimitError,
   type TrainingAppState,
 } from "@/lib/training-state";
 
@@ -112,6 +116,13 @@ interface ConflictState {
   localState: TrainingAppState;
 }
 
+interface PendingImport {
+  state: TrainingAppState;
+  fileName: string;
+  years: number;
+  records: number;
+}
+
 const STATUS_ORDER: Record<TrainingStatus, number> = {
   planned: 0,
   "in-progress": 1,
@@ -174,11 +185,24 @@ function formatHours(value: number) {
   return Number.isInteger(value) ? `${value}시간` : `${value.toFixed(1)}시간`;
 }
 
+function parseIsoDate(date: string) {
+  const match = /^(\d{4})-(\d{2})-(\d{2})$/.exec(date);
+  if (!match) return null;
+  const year = Number(match[1]);
+  const month = Number(match[2]);
+  const day = Number(match[3]);
+  const parsed = new Date(Date.UTC(year, month - 1, day));
+  return parsed.getUTCFullYear() === year &&
+    parsed.getUTCMonth() === month - 1 &&
+    parsed.getUTCDate() === day
+    ? { year, month, day }
+    : null;
+}
+
 function formatDate(date: string) {
   if (!date) return "날짜 미정";
-  const [year, month, day] = date.split("-");
-  if (!year || !month || !day) return date;
-  return `${Number(month)}월 ${Number(day)}일`;
+  const parsed = parseIsoDate(date);
+  return parsed ? `${parsed.month}월 ${parsed.day}일` : "날짜 확인";
 }
 
 function syncStatusText(status: SyncStatus) {
@@ -192,17 +216,24 @@ function syncStatusText(status: SyncStatus) {
   }[status];
 }
 
-function dueLabel(record: TrainingRecord) {
+export function dueLabel(record: TrainingRecord, now = new Date()) {
   if (record.status === "completed") return "완료";
   if (record.status === "not-applicable") return "해당 없음";
   if (!record.dueDate) return "기한 미정";
 
-  const due = new Date(`${record.dueDate}T23:59:59`);
-  const now = new Date();
-  const days = Math.ceil((due.getTime() - now.getTime()) / 86_400_000);
+  const due = parseIsoDate(record.dueDate);
+  if (!due) return "기한 확인";
+  const dueDay = Date.UTC(due.year, due.month - 1, due.day);
+  const today = Date.UTC(now.getFullYear(), now.getMonth(), now.getDate());
+  const days = Math.round((dueDay - today) / 86_400_000);
   if (days < 0) return `${Math.abs(days)}일 지남`;
   if (days === 0) return "오늘까지";
   return `D-${days}`;
+}
+
+export function spreadsheetSafeValue(value: string | number) {
+  if (typeof value !== "string") return value;
+  return /^[\t\r\n ]*[=+\-@]/.test(value) ? `'${value}` : value;
 }
 
 function requirementMet(record: TrainingRecord) {
@@ -273,7 +304,9 @@ export function TrainingManager({
   const [migrationPrompt, setMigrationPrompt] =
     useState<MigrationPrompt | null>(null);
   const [conflictState, setConflictState] = useState<ConflictState | null>(null);
+  const [pendingImport, setPendingImport] = useState<PendingImport | null>(null);
   const importInputRef = useRef<HTMLInputElement>(null);
+  const importTriggerRef = useRef<HTMLElement | null>(null);
   const cloudRevisionRef = useRef(0);
   const lastSyncedStateRef = useRef("");
   const cloudStartedRef = useRef(false);
@@ -284,6 +317,37 @@ export function TrainingManager({
   const refreshInProgressRef = useRef(false);
   const cloudConflictPendingRef = useRef(false);
   const activeSaveOperationsRef = useRef(new Set<Promise<boolean>>());
+  const saveQueueRef = useRef<Promise<void>>(Promise.resolve());
+  const mainDialogReturnFocusRef = useRef<HTMLElement | null>(null);
+  const profileReturnFocusRef = useRef<HTMLElement | null>(null);
+  const syncLoading = Boolean(
+    account && syncStatus === "loading" && !migrationPrompt && !pendingImport,
+  );
+  // 저장 충돌처럼 먼저 처리해야 하는 창을 우선해 한 번에 한 모달만 보여 줍니다.
+  const activeDialogKey = conflictState
+    ? "conflict"
+    : migrationPrompt
+      ? "migration"
+      : pendingImport
+        ? "backup-import"
+        : formOpen
+          ? "training-form"
+          : syncLoading
+            ? "sync-loading"
+            : "";
+  const dialogRef = useDialogFocus(
+    Boolean(activeDialogKey),
+    activeDialogKey,
+    mainDialogReturnFocusRef,
+  );
+
+  const rememberDialogTrigger = (trigger?: HTMLElement | null) => {
+    mainDialogReturnFocusRef.current =
+      trigger ??
+      (document.activeElement instanceof HTMLElement
+        ? document.activeElement
+        : null);
+  };
 
   const appState = useMemo<TrainingAppState>(
     () => ({
@@ -375,12 +439,21 @@ export function TrainingManager({
         return Promise.resolve(false);
       }
       setSyncStatus(allowDuringRefresh ? "loading" : "saving");
-      const operation = (async () => {
+      const operation = saveQueueRef.current.then(async () => {
+        if (
+          deleteRequestedRef.current ||
+          cloudConflictPendingRef.current ||
+          (refreshInProgressRef.current && !allowDuringRefresh)
+        ) {
+          return false;
+        }
         try {
+          // 앞선 저장이 끝난 뒤의 최신 서버 버전을 사용해 요청 겹침을 막습니다.
+          const effectiveBaseRevision = cloudRevisionRef.current || baseRevision;
           const response = await fetch("/api/training-state", {
             method: "PUT",
             headers: { "content-type": "application/json" },
-            body: JSON.stringify({ baseRevision, state }),
+            body: JSON.stringify({ baseRevision: effectiveBaseRevision, state }),
           });
           const result = (await response.json()) as {
             revision?: number;
@@ -401,7 +474,8 @@ export function TrainingManager({
               setConflictState({
                 serverState,
                 serverRevision,
-                localState: state,
+                // 요청 뒤에 화면에서 더 수정한 내용까지 충돌 선택창에서 보존합니다.
+                localState: latestAppStateRef.current,
               });
               setSyncStatus("conflict");
             }
@@ -421,16 +495,29 @@ export function TrainingManager({
             setSyncStatus("saved");
           }
           return true;
-        } catch {
+        } catch (error) {
           if (
             !deleteRequestedRef.current &&
             (!refreshInProgressRef.current || allowDuringRefresh)
           ) {
             setSyncStatus("offline");
           }
+          if (
+            error instanceof Error &&
+            error.message &&
+            error.message !== "sync failed"
+          ) {
+            setStorageWarning(
+              `${error.message} 현재 기록은 이 기기에 보관했으며, 전체 연도 백업도 내려받을 수 있습니다.`,
+            );
+          }
           return false;
         }
-      })();
+      });
+      saveQueueRef.current = operation.then(
+        () => undefined,
+        () => undefined,
+      );
       activeSaveOperationsRef.current.add(operation);
       void operation.finally(() => {
         activeSaveOperationsRef.current.delete(operation);
@@ -447,7 +534,8 @@ export function TrainingManager({
       migrationPrompt ||
       conflictState ||
       formOpen ||
-      profileOpen
+      profileOpen ||
+      pendingImport
     ) {
       return;
     }
@@ -554,6 +642,7 @@ export function TrainingManager({
     currentYear,
     formOpen,
     migrationPrompt,
+    pendingImport,
     profileOpen,
     saveToCloud,
   ]);
@@ -819,12 +908,12 @@ export function TrainingManager({
   }, [account, cloudReady, refreshFromCloud]);
 
   useEffect(() => {
-    const syncLoading = Boolean(account && syncStatus === "loading");
     if (
       !formOpen &&
       !profileOpen &&
       !migrationPrompt &&
       !conflictState &&
+      !pendingImport &&
       !syncLoading
     ) {
       return;
@@ -835,6 +924,7 @@ export function TrainingManager({
       if (event.key === "Escape" && !migrationPrompt && !conflictState) {
         setFormOpen(false);
         setProfileOpen(false);
+        setPendingImport(null);
       }
     };
     window.addEventListener("keydown", handleKeyDown);
@@ -842,7 +932,14 @@ export function TrainingManager({
       document.body.style.overflow = previousOverflow;
       window.removeEventListener("keydown", handleKeyDown);
     };
-  }, [account, conflictState, formOpen, migrationPrompt, profileOpen, syncStatus]);
+  }, [
+    conflictState,
+    formOpen,
+    migrationPrompt,
+    pendingImport,
+    profileOpen,
+    syncLoading,
+  ]);
 
   useEffect(() => {
     if (!toast) return;
@@ -855,12 +952,27 @@ export function TrainingManager({
 
   const importLocalRecordsToCloud = async () => {
     if (!migrationPrompt) return;
+    if (migrationPrompt.cloudState) {
+      const date = todayForInput().replaceAll("-", "");
+      downloadTextFile(
+        `${date}_계정연결전_클라우드백업.json`,
+        JSON.stringify(migrationPrompt.cloudState, null, 2),
+        "application/json;charset=utf-8",
+      );
+    }
     const nextState = migrationPrompt.cloudState
       ? mergeTrainingStates(
           migrationPrompt.localState,
           migrationPrompt.cloudState,
         )
       : migrationPrompt.localState;
+    const limitError = trainingStateLimitError(nextState);
+    if (limitError) {
+      setToast(
+        `${limitError} 기기 기록과 계정 기록을 합치지 않았습니다. 먼저 각 기록을 백업한 뒤 불필요한 항목을 정리해 주세요.`,
+      );
+      return;
+    }
     applyAppState(nextState);
     setMigrationPrompt(null);
     cacheStateOnDevice(
@@ -871,7 +983,11 @@ export function TrainingManager({
     if (saved) {
       setCloudReady(true);
       markMigrationComplete(migrationPrompt.accountScope);
-      setToast("이 브라우저의 기록을 계정에 안전하게 가져왔습니다.");
+      setToast(
+        migrationPrompt.cloudState
+          ? "기존 계정 기록을 백업한 뒤 기기와 계정 기록을 합쳤습니다."
+          : "이 브라우저의 기록을 계정에 가져왔습니다.",
+      );
     } else {
       setCloudReady(false);
     }
@@ -946,7 +1062,8 @@ export function TrainingManager({
 
   const resolveWithLocalVersion = async () => {
     if (!conflictState) return;
-    const localState = conflictState.localState;
+    // 충돌 안내가 열린 뒤에도 반영된 화면 수정이 있다면 버튼을 누르는 시점의 최신본을 사용합니다.
+    const localState = latestAppStateRef.current;
     const revision = conflictState.serverRevision;
     cloudConflictPendingRef.current = false;
     setConflictState(null);
@@ -961,7 +1078,12 @@ export function TrainingManager({
     }
   };
 
-  const openProfileSettings = () => {
+  const openProfileSettings = (trigger?: HTMLElement) => {
+    profileReturnFocusRef.current =
+      trigger ??
+      (document.activeElement instanceof HTMLElement
+        ? document.activeElement
+        : null);
     setProfileForm({ ...activeProfile, duties: [...activeProfile.duties] });
     setProfileOpen(true);
   };
@@ -996,7 +1118,7 @@ export function TrainingManager({
       records,
       savedProfile,
       activeYear,
-      savedProfile.updatedAt,
+      MAX_RECORDS_PER_YEAR,
     );
     setProfilesByYear((previous) => ({
       ...previous,
@@ -1004,16 +1126,30 @@ export function TrainingManager({
     }));
     updateActiveRecords(() => evaluated);
     setProfileOpen(false);
-    const counts = recommendationCounts(evaluated, savedProfile, activeYear);
+    const counts = recommendationCounts(
+      evaluated,
+      savedProfile,
+      activeYear,
+      MAX_RECORDS_PER_YEAR,
+    );
+    const skippedDutyTrainings = Math.max(
+      0,
+      applyProfileRecommendations(records, savedProfile, activeYear).length -
+        evaluated.length,
+    );
     setToast(
-      `맞춤 분류 완료: 기본 적용 ${counts.applies}개, 확인 필요 ${counts.review}개, 기본 제외 ${counts["not-applicable"]}개`,
+      `맞춤 분류 완료: 기본 적용 ${counts.applies}개, 확인 필요 ${counts.review}개, 기본 제외 ${counts["not-applicable"]}개${
+        skippedDutyTrainings > 0
+          ? ` · 기록 한도로 담당업무 연수 ${skippedDutyTrainings}개는 추가하지 않음`
+          : ""
+      }`,
     );
   };
 
   const deleteCloudRecords = async () => {
     if (!account || cloudRevisionRef.current < 1) return;
     const confirmation = window.prompt(
-      "클라우드 기록을 삭제하려면 ‘클라우드 기록 삭제’를 입력해 주세요. 이 기기의 기록은 남습니다.",
+      "클라우드 기록을 삭제하려면 ‘클라우드 기록 삭제’를 입력해 주세요. 이 계정의 기기 캐시는 남습니다.",
     );
     if (confirmation !== "클라우드 기록 삭제") return;
     deleteRequestedRef.current = true;
@@ -1081,7 +1217,7 @@ export function TrainingManager({
       }
       setToast(
         deviceSaved
-          ? "클라우드 기록을 삭제했습니다. 현재 기록은 이 기기에만 남아 있습니다."
+          ? "클라우드 기록을 삭제했습니다. 현재 기록은 이 계정의 기기 캐시에 남아 있습니다."
           : "클라우드 기록은 삭제했습니다. 현재 기록은 백업 파일로 내려받아 주세요.",
       );
     } catch {
@@ -1227,13 +1363,15 @@ export function TrainingManager({
     }));
   };
 
-  const openAddForm = () => {
+  const openAddForm = (trigger?: HTMLElement) => {
+    rememberDialogTrigger(trigger);
     setEditingRecord(null);
     setForm(createBlankForm(activeYear));
     setFormOpen(true);
   };
 
-  const openEditForm = (record: TrainingRecord) => {
+  const openEditForm = (record: TrainingRecord, trigger?: HTMLElement) => {
+    rememberDialogTrigger(trigger);
     setEditingRecord(record);
     setForm(recordToForm(record));
     setFormOpen(true);
@@ -1242,6 +1380,12 @@ export function TrainingManager({
   const saveForm = (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault();
     if (!form.title.trim()) return;
+    if (!editingRecord && records.length >= MAX_RECORDS_PER_YEAR) {
+      setToast(
+        `한 연도에는 최대 ${MAX_RECORDS_PER_YEAR.toLocaleString("ko-KR")}개의 연수를 기록할 수 있습니다.`,
+      );
+      return;
+    }
 
     const requiredHours = parseHours(form.requiredHours);
     let completedHours = parseHours(form.completedHours);
@@ -1297,14 +1441,14 @@ export function TrainingManager({
     setToast(editingRecord ? "연수 기록을 수정했습니다." : "새 연수를 추가했습니다.");
   };
 
-  const toggleCompleted = (record: TrainingRecord) => {
+  const toggleCompleted = (record: TrainingRecord, trigger?: HTMLElement) => {
     if (record.templateKey === "school-safety") {
-      openEditForm(record);
+      openEditForm(record, trigger);
       setToast("해당 연도에 실제로 이수한 시간을 입력하면 최근 3년 합계가 자동 계산됩니다.");
       return;
     }
     if (getEffectiveApplicability(record) === "not-applicable") {
-      openEditForm(record);
+      openEditForm(record, trigger);
       setToast("현재 프로필에서 기본 제외된 항목입니다. 적용 대상을 먼저 변경해 주세요.");
       return;
     }
@@ -1341,6 +1485,13 @@ export function TrainingManager({
 
   const undoDelete = () => {
     if (!lastDeleted) return;
+    const targetRecords = recordsByYear[String(lastDeleted.year)] ?? [];
+    if (targetRecords.length >= MAX_RECORDS_PER_YEAR) {
+      setToast(
+        `한 연도에는 최대 ${MAX_RECORDS_PER_YEAR.toLocaleString("ko-KR")}개까지만 기록할 수 있어 삭제를 되돌리지 못했습니다.`,
+      );
+      return;
+    }
     setRecordsByYear((previous) => {
       const yearRecords = [...(previous[String(lastDeleted.year)] ?? [])];
       yearRecords.splice(lastDeleted.index, 0, lastDeleted.record);
@@ -1366,8 +1517,18 @@ export function TrainingManager({
       setToast("기본 연수 목록이 모두 들어 있습니다.");
       return;
     }
-    updateActiveRecords((current) => [...current, ...missing]);
-    setToast(`빠진 기본 연수 ${missing.length}개를 다시 넣었습니다.`);
+    const availableSlots = Math.max(0, MAX_RECORDS_PER_YEAR - records.length);
+    if (availableSlots === 0) {
+      setToast("이 연도의 기록 수가 한도에 도달해 기본 목록을 복원하지 못했습니다.");
+      return;
+    }
+    const additions = missing.slice(0, availableSlots);
+    updateActiveRecords((current) => [...current, ...additions]);
+    setToast(
+      additions.length === missing.length
+        ? `빠진 기본 연수 ${missing.length}개를 다시 넣었습니다.`
+        : `기록 한도 때문에 기본 연수 ${additions.length}개만 복원했습니다.`,
+    );
   };
 
   const copyPreviousPersonalTrainings = () => {
@@ -1404,8 +1565,18 @@ export function TrainingManager({
       setToast("전년도 개인 연수가 이미 모두 들어 있습니다.");
       return;
     }
-    updateActiveRecords((current) => [...additions, ...current]);
-    setToast(`전년도 개인 연수 ${additions.length}개를 가져왔습니다.`);
+    const availableSlots = Math.max(0, MAX_RECORDS_PER_YEAR - records.length);
+    const acceptedAdditions = additions.slice(0, availableSlots);
+    if (acceptedAdditions.length === 0) {
+      setToast("이 연도의 기록 수가 한도에 도달해 연수를 가져오지 못했습니다.");
+      return;
+    }
+    updateActiveRecords((current) => [...acceptedAdditions, ...current]);
+    setToast(
+      acceptedAdditions.length === additions.length
+        ? `전년도 개인 연수 ${acceptedAdditions.length}개를 가져왔습니다.`
+        : `기록 한도 때문에 전년도 개인 연수 ${acceptedAdditions.length}개만 가져왔습니다.`,
+    );
   };
 
   const exportBackup = () => {
@@ -1425,6 +1596,7 @@ export function TrainingManager({
       "연수명",
       "분류",
       "상태",
+      "맞춤 판단",
       "주기",
       "기준 시간",
       "이수 시간",
@@ -1433,15 +1605,31 @@ export function TrainingManager({
       "방식",
       "메모",
     ];
-    const escape = (value: string | number) =>
-      `"${String(value).replaceAll('"', '""')}"`;
-    const rows = records.map((record) =>
-      [
+    const escape = (value: string | number) => {
+      const safeValue = spreadsheetSafeValue(value);
+      return `"${String(safeValue).replaceAll('"', '""')}"`;
+    };
+    const rows = records.map((record) => {
+      const applicability = getEffectiveApplicability(record);
+      const displayedStatus =
+        record.status === "planned" && applicability === "review"
+          ? "확인 필요"
+          : record.status === "planned" && applicability === "not-applicable"
+            ? "기본 제외"
+            : STATUS_LABELS[record.status];
+      const applicabilityLabel =
+        applicability === "applies"
+          ? "맞춤 적용"
+          : applicability === "review"
+            ? "학교 확인"
+            : "프로필 제외";
+      return [
         activeYear,
         KIND_LABELS[record.kind],
         record.title,
         record.category,
-        STATUS_LABELS[record.status],
+        displayedStatus,
+        record.kind === "required" ? applicabilityLabel : "사용자 추가",
         record.cycle,
         record.requiredHours || "",
         record.completedHours || "",
@@ -1451,8 +1639,8 @@ export function TrainingManager({
         record.memo,
       ]
         .map(escape)
-        .join(","),
-    );
+        .join(",");
+    });
     const date = todayForInput().replaceAll("-", "");
     downloadTextFile(
       `${date}_${activeYear}년_연수기록.csv`,
@@ -1465,17 +1653,40 @@ export function TrainingManager({
   const importBackup = async (event: ChangeEvent<HTMLInputElement>) => {
     const file = event.target.files?.[0];
     event.target.value = "";
+    const returnFocusTarget = importTriggerRef.current;
+    importTriggerRef.current = null;
     if (!file) return;
     try {
-      const parsed = parseTrainingState(JSON.parse(await file.text()), currentYear);
+      const rawState = JSON.parse(await file.text()) as unknown;
+      const limitError = trainingStateLimitError(rawState);
+      if (limitError) {
+        setToast(`${limitError} 기존 기록은 그대로 유지했습니다.`);
+        return;
+      }
+      const parsed = parseTrainingBackupState(rawState, currentYear);
       if (!parsed) throw new Error("invalid backup");
-      applyAppState(parsed);
-      setToast(
-        `${Object.keys(parsed.recordsByYear).length}개 연도의 백업을 불러왔습니다.`,
-      );
+      const counts = countTrainingState(parsed);
+      mainDialogReturnFocusRef.current = returnFocusTarget;
+      setPendingImport({
+        state: parsed,
+        fileName: file.name,
+        years: counts.years,
+        records: counts.records,
+      });
     } catch {
       setToast("백업 파일 형식이 맞지 않아 기존 기록을 그대로 유지했습니다.");
     }
+  };
+
+  const confirmImportBackup = () => {
+    if (!pendingImport) return;
+    exportBackup();
+    applyAppState(pendingImport.state);
+    const { years, records: importedRecords } = pendingImport;
+    setPendingImport(null);
+    setToast(
+      `현재 기록을 백업한 뒤 ${years}개 연도, ${importedRecords}개 기록을 불러왔습니다.`,
+    );
   };
 
   const clearFilters = () => {
@@ -1510,7 +1721,7 @@ export function TrainingManager({
             <button
               className="profile-button"
               type="button"
-              onClick={openProfileSettings}
+              onClick={(event) => openProfileSettings(event.currentTarget)}
             >
               <span aria-hidden="true">◎</span>
               <span>
@@ -1573,7 +1784,11 @@ export function TrainingManager({
                 →
               </button>
             </div>
-            <button className="primary-button" type="button" onClick={openAddForm}>
+            <button
+              className="primary-button"
+              type="button"
+              onClick={(event) => openAddForm(event.currentTarget)}
+            >
               <span aria-hidden="true">＋</span> 연수 추가
             </button>
           </div>
@@ -1603,7 +1818,7 @@ export function TrainingManager({
               <span aria-hidden="true">●</span>
               {account
                 ? cloudReady
-                  ? "로그인 계정과 이 기기에 함께 저장됩니다"
+                  ? "계정에 동기화되고 이 기기에도 임시 보관됩니다"
                   : "현재 기록은 이 기기에 안전하게 보관됩니다"
                 : "로그인 전에는 이 브라우저에만 저장됩니다"}
             </div>
@@ -1703,7 +1918,10 @@ export function TrainingManager({
             ) : (
               <p>교육청·학교 유형·고용 형태·담당업무에 맞춰 연수 목록을 분류합니다.</p>
             )}
-            <button type="button" onClick={openProfileSettings}>
+            <button
+              type="button"
+              onClick={(event) => openProfileSettings(event.currentTarget)}
+            >
               {activeProfile.configured ? "근무 조건 수정" : "지금 설정하기"}
             </button>
           </article>
@@ -1771,7 +1989,11 @@ export function TrainingManager({
                 </button>
                 <button
                   type="button"
-                  onClick={() => importInputRef.current?.click()}
+                  onClick={(event) => {
+                    // 파일이 정상 백업으로 확인된 뒤에만 모달의 복귀 위치로 확정합니다.
+                    importTriggerRef.current = event.currentTarget;
+                    importInputRef.current?.click();
+                  }}
                 >
                   백업 파일 불러오기
                 </button>
@@ -1794,11 +2016,10 @@ export function TrainingManager({
             </details>
             <input
               ref={importInputRef}
-              className="visually-hidden"
               type="file"
               accept="application/json,.json"
               onChange={importBackup}
-              tabIndex={-1}
+              hidden
             />
           </div>
 
@@ -1869,7 +2090,12 @@ export function TrainingManager({
             </div>
           </div>
 
-          <div className="result-caption">
+          <div
+            className="result-caption"
+            role="status"
+            aria-live="polite"
+            aria-atomic="true"
+          >
             <span>
               총 <strong>{filteredRecords.length}</strong>개
             </span>
@@ -1924,7 +2150,9 @@ export function TrainingManager({
                       <button
                         className={`complete-check ${met ? "checked" : ""}`}
                         type="button"
-                        onClick={() => toggleCompleted(record)}
+                        onClick={(event) =>
+                          toggleCompleted(record, event.currentTarget)
+                        }
                         aria-label={
                           record.status === "completed"
                             ? `${record.title} 완료 취소`
@@ -1984,6 +2212,7 @@ export function TrainingManager({
                     </div>
 
                     <div className="row-hours">
+                      <span className="visually-hidden">기준 및 이수 시간: </span>
                       <strong>{record.cycle}</strong>
                       <span>
                         {record.templateKey === "school-safety" &&
@@ -2001,7 +2230,8 @@ export function TrainingManager({
                     </div>
 
                     <div className="row-due">
-                      <span className="mobile-label">기한</span>
+                      <span className="visually-hidden">기한: </span>
+                      <span className="mobile-label" aria-hidden="true">기한</span>
                       <strong>{formatDate(record.dueDate)}</strong>
                       <small>{dueLabel(record)}</small>
                     </div>
@@ -2018,7 +2248,12 @@ export function TrainingManager({
                           근거 ↗
                         </a>
                       ) : null}
-                      <button type="button" onClick={() => openEditForm(record)}>
+                      <button
+                        type="button"
+                        onClick={(event) =>
+                          openEditForm(record, event.currentTarget)
+                        }
+                      >
                         수정
                       </button>
                     </div>
@@ -2035,7 +2270,10 @@ export function TrainingManager({
                 <button type="button" onClick={clearFilters}>
                   필터 초기화
                 </button>
-                <button type="button" onClick={openAddForm}>
+                <button
+                  type="button"
+                  onClick={(event) => openAddForm(event.currentTarget)}
+                >
                   연수 추가
                 </button>
               </div>
@@ -2082,8 +2320,9 @@ export function TrainingManager({
         <p>
           {cloudSyncEnabled ? (
             <>
-              비로그인 기록은 이 기기에만, 로그인 기록은 기기와 계정 저장소에
-              보관됩니다. 이메일 원문은 기록 DB에 저장하지 않습니다.
+              비로그인 기록은 이 기기에만 저장됩니다. 로그인 기록은 계정에
+              동기화되고 이 계정용 기기 캐시에도 임시 보관됩니다. 이메일 원문은
+              기록 DB에 저장하지 않습니다.
             </>
           ) : (
             <>
@@ -2097,7 +2336,7 @@ export function TrainingManager({
       </footer>
 
       <ProfileModal
-        open={profileOpen}
+        open={profileOpen && !activeDialogKey}
         year={activeYear}
         value={profileForm}
         hasPreviousProfile={Boolean(profilesByYear[String(activeYear - 1)]?.configured)}
@@ -2105,11 +2344,12 @@ export function TrainingManager({
         onClose={() => setProfileOpen(false)}
         onCopyPrevious={copyPreviousProfile}
         onSave={saveProfile}
+        returnFocusRef={profileReturnFocusRef}
       />
 
-      {account && syncStatus === "loading" && !migrationPrompt ? (
+      {activeDialogKey === "sync-loading" ? (
         <div className="modal-backdrop no-print sync-loading-backdrop" role="status" aria-live="polite">
-          <section className="training-modal sync-loading-card">
+          <section ref={dialogRef} className="training-modal sync-loading-card" tabIndex={-1}>
             <div className="sync-loading-mark" aria-hidden="true">담</div>
             <strong>계정에 저장된 연수 기록을 확인하고 있어요.</strong>
             <span>확인이 끝나면 안전하게 수정할 수 있습니다.</span>
@@ -2117,9 +2357,16 @@ export function TrainingManager({
         </div>
       ) : null}
 
-      {migrationPrompt ? (
+      {activeDialogKey === "migration" && migrationPrompt ? (
         <div className="modal-backdrop no-print" role="presentation">
-          <section className="training-modal sync-modal" role="dialog" aria-modal="true" aria-labelledby="migration-title">
+          <section
+            ref={dialogRef}
+            className="training-modal sync-modal"
+            role="dialog"
+            aria-modal="true"
+            aria-labelledby="migration-title"
+            tabIndex={-1}
+          >
             <div className="modal-header">
               <div>
                 <span>SAFE FIRST SYNC</span>
@@ -2139,7 +2386,7 @@ export function TrainingManager({
               <div className="sync-choice-grid">
                 <button type="button" onClick={() => void importLocalRecordsToCloud()}>
                   <strong>기기 기록 가져오기</strong>
-                  <span>{migrationPrompt.cloudState ? "서로 다른 기록을 안전하게 합칩니다." : "현재 기록을 계정에 처음 저장합니다."}</span>
+                  <span>{migrationPrompt.cloudState ? "계정 기록을 먼저 백업한 뒤, 같은 연수는 최신 수정본을 사용합니다." : "현재 기록을 계정에 처음 저장합니다."}</span>
                 </button>
                 <button type="button" onClick={() => void keepCloudRecords()}>
                   <strong>{migrationPrompt.cloudState ? "계정 기록 사용" : "새 계정 기록으로 시작"}</strong>
@@ -2152,9 +2399,16 @@ export function TrainingManager({
         </div>
       ) : null}
 
-      {conflictState ? (
+      {activeDialogKey === "conflict" && conflictState ? (
         <div className="modal-backdrop no-print" role="presentation">
-          <section className="training-modal sync-modal" role="dialog" aria-modal="true" aria-labelledby="conflict-title">
+          <section
+            ref={dialogRef}
+            className="training-modal sync-modal"
+            role="dialog"
+            aria-modal="true"
+            aria-labelledby="conflict-title"
+            tabIndex={-1}
+          >
             <div className="modal-header">
               <div>
                 <span>SYNC CONFLICT</span>
@@ -2190,7 +2444,63 @@ export function TrainingManager({
         </div>
       ) : null}
 
-      {formOpen ? (
+      {activeDialogKey === "backup-import" && pendingImport ? (
+        <div
+          className="modal-backdrop no-print"
+          role="presentation"
+          onMouseDown={(event) => {
+            if (event.target === event.currentTarget) setPendingImport(null);
+          }}
+        >
+          <section
+            ref={dialogRef}
+            className="training-modal sync-modal import-confirm-modal"
+            role="dialog"
+            aria-modal="true"
+            aria-labelledby="import-confirm-title"
+            tabIndex={-1}
+          >
+            <div className="modal-header">
+              <div>
+                <span>RESTORE BACKUP</span>
+                <h2 id="import-confirm-title">이 백업으로 기록을 바꿀까요?</h2>
+              </div>
+              <button
+                type="button"
+                onClick={() => setPendingImport(null)}
+                aria-label="백업 불러오기 확인 창 닫기"
+              >
+                ×
+              </button>
+            </div>
+            <div className="modal-body">
+              <div className="sync-illustration" aria-hidden="true">⇄</div>
+              <p>
+                <strong>{pendingImport.fileName}</strong>에는 {pendingImport.years}개
+                연도, {pendingImport.records}개 기록이 있습니다. 적용하면 현재
+                화면의 전체 기록과 근무 조건을 바꿉니다.
+              </p>
+              {account ? (
+                <p className="import-account-warning">
+                  로그인 중이므로 적용한 기록은 계정에도 동기화됩니다.
+                </p>
+              ) : null}
+              <div className="sync-choice-grid">
+                <button type="button" onClick={() => setPendingImport(null)}>
+                  <strong>취소</strong>
+                  <span>현재 기록을 그대로 유지합니다.</span>
+                </button>
+                <button type="button" onClick={confirmImportBackup}>
+                  <strong>현재 기록 백업 후 불러오기</strong>
+                  <span>현재 기록을 먼저 내려받아 안전하게 보관합니다.</span>
+                </button>
+              </div>
+            </div>
+          </section>
+        </div>
+      ) : null}
+
+      {activeDialogKey === "training-form" ? (
         <div
           className="modal-backdrop no-print"
           role="presentation"
@@ -2199,10 +2509,12 @@ export function TrainingManager({
           }}
         >
           <section
+            ref={dialogRef}
             className="training-modal"
             role="dialog"
             aria-modal="true"
             aria-labelledby="training-form-title"
+            tabIndex={-1}
           >
             <div className="modal-header">
               <div>
