@@ -59,6 +59,7 @@
 @media (max-width: 760px) {
   .github-pages-notice-inner {
     align-items: flex-start;
+    flex-wrap: wrap;
     gap: 8px;
     width: min(100% - 28px, 1320px);
     padding: 10px 0 12px;
@@ -69,6 +70,10 @@
   }
 
   .github-pages-notice a {
-    display: none;
+    display: inline-flex;
+    width: 100%;
+    min-height: 38px;
+    align-items: center;
+    justify-content: center;
   }
 }

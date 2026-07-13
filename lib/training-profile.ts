@@ -391,27 +391,25 @@ export function applyProfileRecommendations(
   records: TrainingRecord[],
   profile: TeacherProfile,
   year: number,
-  recommendationUpdatedAt?: string,
+  maxRecords = Number.POSITIVE_INFINITY,
 ) {
   const existingKeys = new Set(records.map((record) => record.templateKey));
+  const availableSlots = Math.max(0, maxRecords - records.length);
   const additions = DUTY_TEMPLATES.filter(
     (template) => profile.duties.includes(template.duty) && !existingKeys.has(template.key),
-  ).map((template) => createTrainingFromTemplate(template, year));
+  )
+    .slice(0, availableSlots)
+    .map((template) => createTrainingFromTemplate(template, year));
 
   return [...records, ...additions].map((record) => {
     if (record.kind === "personal") return record;
     const recommendation = recommendApplicability(record.templateKey, profile);
-    const changed =
-      record.profileApplicability !== recommendation.decision ||
-      record.profileReason !== recommendation.reason;
     return {
       ...record,
       profileApplicability: recommendation.decision,
       profileReason: recommendation.reason,
-      updatedAt:
-        changed && recommendationUpdatedAt
-          ? recommendationUpdatedAt
-          : record.updatedAt,
+      // 근무 조건 추천만 바뀐 경우 사용자가 수정한 연수 내용의 시각은 유지합니다.
+      updatedAt: record.updatedAt,
     };
   });
 }
@@ -420,8 +418,14 @@ export function recommendationCounts(
   records: TrainingRecord[],
   profile: TeacherProfile,
   year: number,
+  maxRecords = Number.POSITIVE_INFINITY,
 ) {
-  const evaluated = applyProfileRecommendations(records, profile, year);
+  const evaluated = applyProfileRecommendations(
+    records,
+    profile,
+    year,
+    maxRecords,
+  );
   return evaluated.reduce(
     (counts, record) => {
       if (record.kind === "personal") return counts;
@@ -458,7 +462,7 @@ export function getSchoolSafetySummary(
     const matchingRecords = (recordsByYear[String(year)] ?? []).filter(
       (item) =>
         item.templateKey === "school-safety" &&
-        item.status !== "not-applicable" &&
+        (item.status === "completed" || item.status === "in-progress") &&
         getEffectiveApplicability(item) !== "not-applicable",
     );
     return {

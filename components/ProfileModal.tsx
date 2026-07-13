@@ -1,6 +1,6 @@
 "use client";
 
-import type { FormEvent } from "react";
+import type { FormEvent, RefObject } from "react";
 import {
   DUTY_OPTIONS,
   EDUCATION_OFFICES,
@@ -9,6 +9,7 @@ import {
   type DutyCode,
   type TeacherProfile,
 } from "@/lib/training-profile";
+import { useDialogFocus } from "@/components/useDialogFocus";
 
 interface ProfileModalProps {
   open: boolean;
@@ -19,6 +20,7 @@ interface ProfileModalProps {
   onClose: () => void;
   onCopyPrevious: () => void;
   onSave: (event: FormEvent<HTMLFormElement>) => void;
+  returnFocusRef: RefObject<HTMLElement | null>;
 }
 
 export function ProfileModal({
@@ -30,7 +32,10 @@ export function ProfileModal({
   onClose,
   onCopyPrevious,
   onSave,
+  returnFocusRef,
 }: ProfileModalProps) {
+  const dialogRef = useDialogFocus(open, open ? "profile" : "", returnFocusRef);
+
   if (!open) return null;
 
   const toggleDuty = (duty: DutyCode) => {
@@ -49,10 +54,12 @@ export function ProfileModal({
       }}
     >
       <section
+        ref={dialogRef}
         className="training-modal profile-modal"
         role="dialog"
         aria-modal="true"
         aria-labelledby="profile-modal-title"
+        tabIndex={-1}
       >
         <div className="modal-header">
           <div>
@@ -81,6 +88,7 @@ export function ProfileModal({
               <label className="field">
                 <span>소속 시·도교육청 *</span>
                 <select
+                  autoFocus
                   required
                   value={value.educationOffice}
                   onChange={(event) =>

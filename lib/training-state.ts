@@ -26,6 +26,7 @@ import {
 export const STATE_VERSION = 3;
 export const LEGACY_STORAGE_KEY = "teacher-training-manager:v2";
 export const DEVICE_STORAGE_KEY = "teacher-training-manager:v3";
+export const MAX_RECORDS_PER_YEAR = 1000;
 
 export interface TrainingAppState {
   version: typeof STATE_VERSION;
@@ -41,6 +42,27 @@ export function createInitialTrainingState(year: number): TrainingAppState {
     recordsByYear: { [year]: createDefaultTrainings(year) },
     profilesByYear: {},
   };
+}
+
+// 정상 사용 경로에서 기록이 조용히 잘리지 않도록 불러오기·서버 저장 전에 확인합니다.
+export function trainingStateLimitError(value: unknown): string | null {
+  if (!value || typeof value !== "object") return null;
+  const recordsByYear = (value as { recordsByYear?: unknown }).recordsByYear;
+  if (!recordsByYear || typeof recordsByYear !== "object" || Array.isArray(recordsByYear)) {
+    return null;
+  }
+  const countsByYear = new Map<string, number>();
+  for (const [yearKey, records] of Object.entries(recordsByYear)) {
+    if (!Array.isArray(records)) continue;
+    const parsedYear = Number(yearKey);
+    const normalizedYearKey = isValidYear(parsedYear) ? String(parsedYear) : yearKey;
+    const count = (countsByYear.get(normalizedYearKey) ?? 0) + records.length;
+    countsByYear.set(normalizedYearKey, count);
+    if (count > MAX_RECORDS_PER_YEAR) {
+      return `${normalizedYearKey}년 기록이 ${MAX_RECORDS_PER_YEAR.toLocaleString("ko-KR")}개를 초과합니다.`;
+    }
+  }
+  return null;
 }
 
 export function parseTrainingState(
@@ -66,19 +88,22 @@ export function parseTrainingState(
   for (const [yearKey, records] of Object.entries(candidate.recordsByYear)) {
     const year = Number(yearKey);
     if (!isValidYear(year) || !Array.isArray(records)) continue;
+    const canonicalYearKey = String(year);
     const normalizedRecords = records
-      .slice(0, 1000)
       .map((record, index) => normalizeRecord(record, year, index))
       .filter((record): record is TrainingRecord => record !== null);
     const deduplicated = new Map<string, TrainingRecord>();
-    for (const record of normalizedRecords) {
+    for (const record of [
+      ...(recordsByYear[canonicalYearKey] ?? []),
+      ...normalizedRecords,
+    ]) {
       const key = recordMergeKey(record);
       const existing = deduplicated.get(key);
       if (!existing || timestamp(record.updatedAt) > timestamp(existing.updatedAt)) {
         deduplicated.set(key, record);
       }
     }
-    recordsByYear[yearKey] = Array.from(deduplicated.values());
+    recordsByYear[canonicalYearKey] = Array.from(deduplicated.values());
   }
 
   let availableYears = Object.keys(recordsByYear).map(Number);
@@ -97,7 +122,14 @@ export function parseTrainingState(
       const year = Number(yearKey);
       if (!isValidYear(year)) continue;
       const normalized = normalizeProfile(profile, year);
-      if (normalized) profilesByYear[yearKey] = normalized;
+      const canonicalYearKey = String(year);
+      const existing = profilesByYear[canonicalYearKey];
+      if (
+        normalized &&
+        (!existing || timestamp(normalized.updatedAt) > timestamp(existing.updatedAt))
+      ) {
+        profilesByYear[canonicalYearKey] = normalized;
+      }
     }
   }
 
@@ -112,6 +144,79 @@ export function parseTrainingState(
     recordsByYear,
     profilesByYear,
   };
+}
+
+// 사용자가 고른 백업 파일은 브라우저 내부의 오래된 캐시보다 엄격하게 확인합니다.
+// 유효한 연도 없이 기본 목록으로 바뀌는 일을 막고, 손상된 기록이 섞인 파일도 거부합니다.
+export function parseTrainingBackupState(
+  value: unknown,
+  fallbackYear = new Date().getFullYear(),
+): TrainingAppState | null {
+  if (!value || typeof value !== "object") return null;
+  const candidate = value as {
+    activeYear?: unknown;
+    recordsByYear?: unknown;
+    profilesByYear?: unknown;
+  };
+  const recordsByYear = candidate.recordsByYear;
+  if (
+    !recordsByYear ||
+    typeof recordsByYear !== "object" ||
+    Array.isArray(recordsByYear)
+  ) {
+    return null;
+  }
+
+  const entries = Object.entries(recordsByYear);
+  if (entries.length === 0) return null;
+  const recordKeysByYear = new Map<string, Set<string>>();
+  for (const [yearKey, records] of entries) {
+    const year = Number(yearKey);
+    if (!isValidYear(year) || !Array.isArray(records)) return null;
+    const canonicalYearKey = String(year);
+    const seenKeys = recordKeysByYear.get(canonicalYearKey) ?? new Set<string>();
+    for (const record of records) {
+      if (!isValidBackupRecord(record)) return null;
+      const typedRecord = record as TrainingRecord;
+      const key = recordMergeKey(typedRecord);
+      if (seenKeys.has(key)) return null;
+      seenKeys.add(key);
+    }
+    recordKeysByYear.set(canonicalYearKey, seenKeys);
+  }
+
+  if (
+    candidate.activeYear !== undefined &&
+    (!isValidYear(Number(candidate.activeYear)) ||
+      !recordKeysByYear.has(String(Number(candidate.activeYear))))
+  ) {
+    return null;
+  }
+
+  if (candidate.profilesByYear !== undefined) {
+    if (
+      !candidate.profilesByYear ||
+      typeof candidate.profilesByYear !== "object" ||
+      Array.isArray(candidate.profilesByYear)
+    ) {
+      return null;
+    }
+    const profileYears = new Set<string>();
+    for (const [yearKey, profile] of Object.entries(candidate.profilesByYear)) {
+      const year = Number(yearKey);
+      const canonicalYearKey = String(year);
+      if (
+        !isValidYear(year) ||
+        profileYears.has(canonicalYearKey) ||
+        !isValidBackupProfile(profile, year)
+      ) {
+        return null;
+      }
+      profileYears.add(canonicalYearKey);
+    }
+  }
+
+  return parseTrainingState(value, fallbackYear);
 }
 
 export function selectStoredTrainingState(
@@ -175,6 +280,7 @@ export function mergeTrainingStates(
       recordsByYear[yearKey],
       profile,
       Number(yearKey),
+      MAX_RECORDS_PER_YEAR,
     );
   }
 
@@ -240,8 +346,8 @@ function normalizeRecord(
     requiredHours: safeNumber(candidate.requiredHours, 0, 999),
     completedHours: safeNumber(candidate.completedHours, 0, 999),
     status,
-    dueDate: safeString(candidate.dueDate, 10),
-    completedDate: safeString(candidate.completedDate, 10),
+    dueDate: normalizeIsoDate(candidate.dueDate),
+    completedDate: normalizeIsoDate(candidate.completedDate),
     provider: safeString(candidate.provider, 80),
     method: safeString(candidate.method, 20) || "기타",
     memo: safeString(candidate.memo, 600),
@@ -264,18 +370,25 @@ function normalizeProfile(value: unknown, year: number): TeacherProfile | null {
   const employmentValues = EMPLOYMENT_TYPES.map(([code]) => code);
   const dutyValues = new Set(DUTY_OPTIONS.map(([code]) => code));
   const profile = createEmptyProfile(year);
+  const educationOffice = officeValues.includes(
+    candidate.educationOffice as EducationOfficeCode,
+  )
+    ? (candidate.educationOffice as EducationOfficeCode)
+    : "";
+  const schoolType = schoolValues.includes(candidate.schoolType as SchoolType)
+    ? (candidate.schoolType as SchoolType)
+    : "";
+  const employmentType = employmentValues.includes(
+    candidate.employmentType as EmploymentType,
+  )
+    ? (candidate.employmentType as EmploymentType)
+    : "";
 
   return {
     ...profile,
-    educationOffice: officeValues.includes(candidate.educationOffice as EducationOfficeCode)
-      ? (candidate.educationOffice as EducationOfficeCode)
-      : "",
-    schoolType: schoolValues.includes(candidate.schoolType as SchoolType)
-      ? (candidate.schoolType as SchoolType)
-      : "",
-    employmentType: employmentValues.includes(candidate.employmentType as EmploymentType)
-      ? (candidate.employmentType as EmploymentType)
-      : "",
+    educationOffice,
+    schoolType,
+    employmentType,
     contractUnderThreeYears: nullableBoolean(candidate.contractUnderThreeYears),
     directlyEmployed: nullableBoolean(candidate.directlyEmployed),
     studentFacing: nullableBoolean(candidate.studentFacing),
@@ -285,11 +398,134 @@ function normalizeProfile(value: unknown, year: number): TeacherProfile | null {
       : [],
     configured:
       candidate.configured === true &&
-      Boolean(candidate.educationOffice) &&
-      Boolean(candidate.schoolType) &&
-      Boolean(candidate.employmentType),
+      Boolean(educationOffice) &&
+      Boolean(schoolType) &&
+      Boolean(employmentType),
     updatedAt: validTimestamp(candidate.updatedAt) ?? new Date().toISOString(),
   };
+}
+
+function isValidBackupRecord(value: unknown): value is TrainingRecord {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return false;
+  const record = value as Partial<TrainingRecord>;
+  const validStatus = Object.keys(STATUS_LABELS).includes(record.status ?? "");
+  const validCategory = TRAINING_CATEGORIES.includes(
+    record.category as TrainingCategory,
+  );
+  const validDate = (date: unknown) =>
+    date === "" || (typeof date === "string" && normalizeIsoDate(date) === date);
+  const validNumber = (number: unknown) =>
+    typeof number === "number" &&
+    Number.isFinite(number) &&
+    number >= 0 &&
+    number <= 999;
+  const validString = (text: unknown, maxLength: number, allowEmpty = true) =>
+    typeof text === "string" &&
+    text.length <= maxLength &&
+    (allowEmpty || text.trim().length > 0);
+
+  if (
+    !validString(record.id, 160, false) ||
+    !validString(record.title, 100, false) ||
+    !validCategory ||
+    (record.kind !== "required" && record.kind !== "personal") ||
+    !validString(record.cycle, 40, false) ||
+    !validNumber(record.requiredHours) ||
+    !validNumber(record.completedHours) ||
+    !validStatus ||
+    !validDate(record.dueDate) ||
+    !validDate(record.completedDate) ||
+    !validString(record.provider, 80) ||
+    !validString(record.method, 20, false) ||
+    !validString(record.memo, 600) ||
+    !validString(record.guidance, 240) ||
+    validTimestamp(record.createdAt) === null ||
+    validTimestamp(record.updatedAt) === null
+  ) {
+    return false;
+  }
+  if (
+    record.templateKey !== undefined &&
+    !validString(record.templateKey, 120, false)
+  ) {
+    return false;
+  }
+  if (
+    record.sourceName !== undefined &&
+    !validString(record.sourceName, 80, false)
+  ) {
+    return false;
+  }
+  if (
+    record.sourceUrl !== undefined &&
+    optionalHttpUrl(record.sourceUrl) !== record.sourceUrl
+  ) {
+    return false;
+  }
+  if (
+    record.profileApplicability !== undefined &&
+    normalizeApplicability(record.profileApplicability) !==
+      record.profileApplicability
+  ) {
+    return false;
+  }
+  if (
+    record.profileReason !== undefined &&
+    !validString(record.profileReason, 240, false)
+  ) {
+    return false;
+  }
+  if (
+    record.applicabilityOverride !== undefined &&
+    normalizeOverride(record.applicabilityOverride) !==
+      record.applicabilityOverride
+  ) {
+    return false;
+  }
+  return true;
+}
+
+function isValidBackupProfile(value: unknown, year: number): value is TeacherProfile {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return false;
+  const profile = value as Partial<TeacherProfile>;
+  const officeValues = new Set(EDUCATION_OFFICES.map(([code]) => code));
+  const schoolValues = new Set(SCHOOL_TYPES.map(([code]) => code));
+  const employmentValues = new Set(EMPLOYMENT_TYPES.map(([code]) => code));
+  const dutyValues = new Set(DUTY_OPTIONS.map(([code]) => code));
+  const nullableFields = [
+    profile.contractUnderThreeYears,
+    profile.directlyEmployed,
+    profile.studentFacing,
+    profile.handlesPersonalData,
+  ];
+
+  if (
+    profile.year !== year ||
+    typeof profile.configured !== "boolean" ||
+    !Array.isArray(profile.duties) ||
+    new Set(profile.duties).size !== profile.duties.length ||
+    profile.duties.some((duty) => !dutyValues.has(duty as DutyCode)) ||
+    nullableFields.some((field) => field !== null && typeof field !== "boolean") ||
+    validTimestamp(profile.updatedAt) === null
+  ) {
+    return false;
+  }
+  const officeValid =
+    profile.educationOffice === "" ||
+    officeValues.has(profile.educationOffice as EducationOfficeCode);
+  const schoolValid =
+    profile.schoolType === "" || schoolValues.has(profile.schoolType as SchoolType);
+  const employmentValid =
+    profile.employmentType === "" ||
+    employmentValues.has(profile.employmentType as EmploymentType);
+  if (!officeValid || !schoolValid || !employmentValid) return false;
+  if (
+    profile.configured &&
+    (!profile.educationOffice || !profile.schoolType || !profile.employmentType)
+  ) {
+    return false;
+  }
+  return true;
 }
 
 function recordMergeKey(record: TrainingRecord) {
@@ -312,6 +548,21 @@ function validTimestamp(value: unknown) {
 
 function safeString(value: unknown, maxLength: number) {
   return typeof value === "string" ? value.slice(0, maxLength) : "";
+}
+
+function normalizeIsoDate(value: unknown) {
+  const raw = safeString(value, 10);
+  const match = /^(\d{4})-(\d{2})-(\d{2})$/.exec(raw);
+  if (!match) return "";
+  const year = Number(match[1]);
+  const month = Number(match[2]);
+  const day = Number(match[3]);
+  const date = new Date(Date.UTC(year, month - 1, day));
+  return date.getUTCFullYear() === year &&
+    date.getUTCMonth() === month - 1 &&
+    date.getUTCDate() === day
+    ? raw
+    : "";
 }
 
 function optionalString(value: unknown, maxLength: number) {
