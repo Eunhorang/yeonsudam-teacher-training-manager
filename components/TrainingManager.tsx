@@ -11,7 +11,11 @@ import {
   useState,
 } from "react";
 import {
+  CERTIFICATE_FILE_NAME_MAX_LENGTH,
+  CERTIFICATE_STORAGE_LOCATION_MAX_LENGTH,
   createDefaultTrainings,
+  getJeonnamPortalCourse,
+  JEONNAM_TRAINING_PORTAL_URL,
   KIND_LABELS,
   STATUS_LABELS,
   TRAINING_CATEGORIES,
@@ -46,6 +50,8 @@ import {
   migrationMarkerKey,
   parseTrainingBackupState,
   parseTrainingState,
+  PREVIOUS_STORAGE_KEY,
+  previousCloudCacheKey,
   selectStoredTrainingState,
   STATE_VERSION,
   trainingStateLimitError,
@@ -55,6 +61,7 @@ import {
 type KindFilter = "all" | TrainingKind;
 type StatusFilter = "all" | TrainingStatus;
 type CategoryFilter = "all" | TrainingCategory;
+type PortalCourseFilter = "all" | "1" | "2";
 
 interface TrainingFormValues {
   title: string;
@@ -68,6 +75,8 @@ interface TrainingFormValues {
   completedDate: string;
   provider: string;
   method: string;
+  certificateFileName: string;
+  certificateStorageLocation: string;
   memo: string;
   guidance: string;
   applicabilityOverride: "" | ApplicabilityOverride;
@@ -149,6 +158,8 @@ function createBlankForm(year: number): TrainingFormValues {
     completedDate: "",
     provider: "",
     method: "온라인",
+    certificateFileName: "",
+    certificateStorageLocation: "",
     memo: "",
     guidance: "",
     applicabilityOverride: "",
@@ -170,6 +181,8 @@ function recordToForm(record: TrainingRecord): TrainingFormValues {
     completedDate: record.completedDate,
     provider: record.provider,
     method: record.method,
+    certificateFileName: record.certificateFileName,
+    certificateStorageLocation: record.certificateStorageLocation,
     memo: record.memo,
     guidance: record.guidance,
     applicabilityOverride: record.applicabilityOverride ?? "",
@@ -278,6 +291,8 @@ export function TrainingManager({
   const [statusFilter, setStatusFilter] = useState<StatusFilter>("all");
   const [categoryFilter, setCategoryFilter] =
     useState<CategoryFilter>("all");
+  const [portalCourseFilter, setPortalCourseFilter] =
+    useState<PortalCourseFilter>("all");
   const [editingRecord, setEditingRecord] = useState<TrainingRecord | null>(
     null,
   );
@@ -650,17 +665,23 @@ export function TrainingManager({
   useEffect(() => {
     const timer = window.setTimeout(() => {
       try {
-        // v3를 먼저 읽고, v3가 손상된 경우에만 기존 v2를 다시 시도합니다.
+        // 새 v4를 먼저 읽고, 없거나 손상된 경우에만 v3와 v2를 차례로 복구합니다.
         const deviceSelection = selectStoredTrainingState(
           [
             window.localStorage.getItem(DEVICE_STORAGE_KEY),
+            window.localStorage.getItem(PREVIOUS_STORAGE_KEY),
             window.localStorage.getItem(LEGACY_STORAGE_KEY),
           ],
           currentYear,
         );
         const accountSelection = account
           ? selectStoredTrainingState(
-              [window.localStorage.getItem(cloudCacheKey(account.accountScope))],
+              [
+                window.localStorage.getItem(cloudCacheKey(account.accountScope)),
+                window.localStorage.getItem(
+                  previousCloudCacheKey(account.accountScope),
+                ),
+              ],
               currentYear,
             )
           : { state: null, hadInvalidValue: false };
@@ -1297,6 +1318,18 @@ export function TrainingManager({
     };
   }, [records, schoolSafety]);
 
+  const portalCourseCounts = useMemo(
+    () => ({
+      1: records.filter(
+        (record) => getJeonnamPortalCourse(record.templateKey) === 1,
+      ).length,
+      2: records.filter(
+        (record) => getJeonnamPortalCourse(record.templateKey) === 2,
+      ).length,
+    }),
+    [records],
+  );
+
   const filteredRecords = useMemo(() => {
     const normalizedQuery = query.trim().toLocaleLowerCase("ko-KR");
 
@@ -1309,8 +1342,22 @@ export function TrainingManager({
         if (categoryFilter !== "all" && record.category !== categoryFilter) {
           return false;
         }
+        if (
+          portalCourseFilter !== "all" &&
+          getJeonnamPortalCourse(record.templateKey) !==
+            Number(portalCourseFilter)
+        ) {
+          return false;
+        }
         if (!normalizedQuery) return true;
-        return [record.title, record.provider, record.memo, record.category]
+        return [
+          record.title,
+          record.provider,
+          record.memo,
+          record.category,
+          record.certificateFileName,
+          record.certificateStorageLocation,
+        ]
           .join(" ")
           .toLocaleLowerCase("ko-KR")
           .includes(normalizedQuery);
@@ -1321,7 +1368,14 @@ export function TrainingManager({
         if (a.kind !== b.kind) return a.kind === "required" ? -1 : 1;
         return a.title.localeCompare(b.title, "ko-KR");
       });
-  }, [categoryFilter, kindFilter, query, records, statusFilter]);
+  }, [
+    categoryFilter,
+    kindFilter,
+    portalCourseFilter,
+    query,
+    records,
+    statusFilter,
+  ]);
 
   const yearOptions = useMemo(() => {
     const years = new Set<number>();
@@ -1419,6 +1473,8 @@ export function TrainingManager({
       completedDate,
       provider: form.provider.trim(),
       method: form.method,
+      certificateFileName: form.certificateFileName.trim(),
+      certificateStorageLocation: form.certificateStorageLocation.trim(),
       memo: form.memo.trim(),
       guidance: form.guidance.trim(),
       sourceName: editingRecord?.sourceName,
@@ -1557,6 +1613,8 @@ export function TrainingManager({
         status: "planned" as TrainingStatus,
         completedHours: 0,
         completedDate: "",
+        certificateFileName: "",
+        certificateStorageLocation: "",
         dueDate: `${activeYear}-12-31`,
         createdAt: timestamp,
         updatedAt: timestamp,
@@ -1603,6 +1661,8 @@ export function TrainingManager({
       "이수일",
       "기관",
       "방식",
+      "수료증 파일명",
+      "수료증 보관 위치",
       "메모",
     ];
     const escape = (value: string | number) => {
@@ -1636,6 +1696,8 @@ export function TrainingManager({
         record.completedDate,
         record.provider,
         record.method,
+        record.certificateFileName,
+        record.certificateStorageLocation,
         record.memo,
       ]
         .map(escape)
@@ -1694,6 +1756,12 @@ export function TrainingManager({
     setKindFilter("all");
     setStatusFilter("all");
     setCategoryFilter("all");
+    setPortalCourseFilter("all");
+  };
+
+  const selectPortalCourseFilter = (value: PortalCourseFilter) => {
+    setPortalCourseFilter(value);
+    setKindFilter(value === "all" ? "all" : "required");
   };
 
   const ringStyle = {
@@ -2037,7 +2105,10 @@ export function TrainingManager({
                   type="button"
                   className={kindFilter === value ? "active" : ""}
                   aria-pressed={kindFilter === value}
-                  onClick={() => setKindFilter(value)}
+                  onClick={() => {
+                    setKindFilter(value);
+                    if (value === "personal") setPortalCourseFilter("all");
+                  }}
                 >
                   {label}
                   <span>
@@ -2055,7 +2126,7 @@ export function TrainingManager({
                   type="search"
                   value={query}
                   onChange={(event) => setQuery(event.target.value)}
-                  placeholder="연수명, 기관, 메모 검색"
+                  placeholder="연수명, 기관, 수료증, 메모 검색"
                   aria-label="연수 검색"
                 />
               </label>
@@ -2090,6 +2161,48 @@ export function TrainingManager({
             </div>
           </div>
 
+          <div className="portal-filter-bar no-print">
+            <div className="portal-filter-copy">
+              <strong>전남교육연수포털 일괄 과정</strong>
+              <span>법정의무연수 1·2에 포함된 항목만 빠르게 모아보세요.</span>
+            </div>
+            <div className="portal-filter-actions">
+              <div
+                className="portal-course-tabs"
+                role="group"
+                aria-label="전남교육연수포털 과정 필터"
+              >
+                {(
+                  [
+                    ["all", "전체 연수", records.length],
+                    ["1", "의무연수 1", portalCourseCounts[1]],
+                    ["2", "의무연수 2", portalCourseCounts[2]],
+                  ] as const
+                ).map(([value, label, count]) => (
+                  <button
+                    key={value}
+                    type="button"
+                    className={portalCourseFilter === value ? "active" : ""}
+                    aria-pressed={portalCourseFilter === value}
+                    onClick={() => selectPortalCourseFilter(value)}
+                  >
+                    {label}
+                    <span>{count}</span>
+                  </button>
+                ))}
+              </div>
+              <a
+                className="portal-outbound-link"
+                href={JEONNAM_TRAINING_PORTAL_URL}
+                target="_blank"
+                rel="noreferrer"
+                aria-label="전남교육연수포털 새 창에서 열기"
+              >
+                포털에서 이수하기 <span aria-hidden="true">↗</span>
+              </a>
+            </div>
+          </div>
+
           <div
             className="result-caption"
             role="status"
@@ -2097,12 +2210,16 @@ export function TrainingManager({
             aria-atomic="true"
           >
             <span>
-              총 <strong>{filteredRecords.length}</strong>개
+              {portalCourseFilter === "all"
+                ? "총 "
+                : `법정의무연수 ${portalCourseFilter} · 총 `}
+              <strong>{filteredRecords.length}</strong>개
             </span>
             {(query ||
               kindFilter !== "all" ||
               statusFilter !== "all" ||
-              categoryFilter !== "all") && (
+              categoryFilter !== "all" ||
+              portalCourseFilter !== "all") && (
               <button className="no-print" type="button" onClick={clearFilters}>
                 필터 초기화
               </button>
@@ -2193,6 +2310,20 @@ export function TrainingManager({
                           <span>{formatDate(record.completedDate)} 이수</span>
                         ) : null}
                         {record.memo ? <span className="memo-text">{record.memo}</span> : null}
+                        {record.certificateFileName ||
+                        record.certificateStorageLocation ? (
+                          <div className="certificate-details">
+                            <strong>수료증</strong>
+                            {record.certificateFileName ? (
+                              <span>파일명: {record.certificateFileName}</span>
+                            ) : null}
+                            {record.certificateStorageLocation ? (
+                              <span>
+                                보관 위치: {record.certificateStorageLocation}
+                              </span>
+                            ) : null}
+                          </div>
+                        ) : null}
                       </div>
                       {record.guidance ? (
                         <p className="guidance-text">{record.guidance}</p>
@@ -2738,6 +2869,66 @@ export function TrainingManager({
                   </label>
                 </div>
 
+                <section
+                  className="certificate-form-section"
+                  aria-labelledby="certificate-fields-title"
+                >
+                  <div className="certificate-form-heading">
+                    <strong id="certificate-fields-title">수료증 기록</strong>
+                    <span>
+                      파일을 올리지 않고, 나중에 찾기 위한 정보만 저장합니다.
+                    </span>
+                  </div>
+                  <div className="form-grid certificate-form-grid">
+                    <label className="field">
+                      <span>
+                        수료증 파일명{" "}
+                        <small>
+                          {form.certificateFileName.length}/
+                          {CERTIFICATE_FILE_NAME_MAX_LENGTH}
+                        </small>
+                      </span>
+                      <input
+                        maxLength={CERTIFICATE_FILE_NAME_MAX_LENGTH}
+                        value={form.certificateFileName}
+                        onChange={(event) =>
+                          setForm((previous) => ({
+                            ...previous,
+                            certificateFileName: event.target.value,
+                          }))
+                        }
+                        placeholder="예: 20260713_법정의무연수1.pdf"
+                      />
+                    </label>
+                    <label className="field">
+                      <span>
+                        보관 위치{" "}
+                        <small>
+                          {form.certificateStorageLocation.length}/
+                          {CERTIFICATE_STORAGE_LOCATION_MAX_LENGTH}
+                        </small>
+                      </span>
+                      <input
+                        maxLength={CERTIFICATE_STORAGE_LOCATION_MAX_LENGTH}
+                        value={form.certificateStorageLocation}
+                        onChange={(event) =>
+                          setForm((previous) => ({
+                            ...previous,
+                            certificateStorageLocation: event.target.value,
+                          }))
+                        }
+                        placeholder="예: 내 문서/2026년 연수/수료증"
+                      />
+                    </label>
+                  </div>
+                  <p>
+                    파일명과 보관 위치에 학생·교직원 개인정보를 기록하지 마세요. {" "}
+                    {cloudSyncEnabled
+                      ? "로그인하면 이 두 정보도 계정에 동기화됩니다."
+                      : "입력 내용은 이 브라우저와 백업·CSV 파일에 포함됩니다."}
+                  </p>
+                </section>
+
                 <label className="field full-field">
                   <span>확인할 내용</span>
                   <input
@@ -2767,7 +2958,7 @@ export function TrainingManager({
                         memo: event.target.value,
                       }))
                     }
-                    placeholder="수료증 위치, 과정명처럼 나중에 확인할 내용을 적어 두세요. 학생 개인정보는 입력하지 마세요."
+                    placeholder="과정에서 다시 확인할 내용이나 개인 메모를 적어 두세요. 학생 개인정보는 입력하지 마세요."
                   />
                 </label>
               </div>

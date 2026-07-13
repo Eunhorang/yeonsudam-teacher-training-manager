@@ -1,4 +1,6 @@
 import {
+  CERTIFICATE_FILE_NAME_MAX_LENGTH,
+  CERTIFICATE_STORAGE_LOCATION_MAX_LENGTH,
   createDefaultTrainings,
   normalizeDefaultTrainingTitle,
   STATUS_LABELS,
@@ -24,9 +26,10 @@ import {
   type TeacherProfile,
 } from "@/lib/training-profile";
 
-export const STATE_VERSION = 3;
+export const STATE_VERSION = 4;
 export const LEGACY_STORAGE_KEY = "teacher-training-manager:v2";
-export const DEVICE_STORAGE_KEY = "teacher-training-manager:v3";
+export const PREVIOUS_STORAGE_KEY = "teacher-training-manager:v3";
+export const DEVICE_STORAGE_KEY = "teacher-training-manager:v4";
 export const MAX_RECORDS_PER_YEAR = 1000;
 
 export interface TrainingAppState {
@@ -77,6 +80,15 @@ export function parseTrainingState(
     recordsByYear?: unknown;
     profilesByYear?: unknown;
   };
+  if (
+    candidate.version !== undefined &&
+    (typeof candidate.version !== "number" ||
+      !Number.isInteger(candidate.version) ||
+      candidate.version < 1 ||
+      candidate.version > STATE_VERSION)
+  ) {
+    return null;
+  }
   if (
     !candidate.recordsByYear ||
     typeof candidate.recordsByYear !== "object" ||
@@ -155,10 +167,21 @@ export function parseTrainingBackupState(
 ): TrainingAppState | null {
   if (!value || typeof value !== "object") return null;
   const candidate = value as {
+    version?: unknown;
     activeYear?: unknown;
     recordsByYear?: unknown;
     profilesByYear?: unknown;
   };
+  if (
+    candidate.version !== undefined &&
+    (typeof candidate.version !== "number" ||
+      !Number.isInteger(candidate.version) ||
+      candidate.version < 1 ||
+      candidate.version > STATE_VERSION)
+  ) {
+    return null;
+  }
+  const requiresCertificateFields = candidate.version === STATE_VERSION;
   const recordsByYear = candidate.recordsByYear;
   if (
     !recordsByYear ||
@@ -177,7 +200,7 @@ export function parseTrainingBackupState(
     const canonicalYearKey = String(year);
     const seenKeys = recordKeysByYear.get(canonicalYearKey) ?? new Set<string>();
     for (const record of records) {
-      if (!isValidBackupRecord(record)) return null;
+      if (!isValidBackupRecord(record, requiresCertificateFields)) return null;
       const typedRecord = record as TrainingRecord;
       const key = recordMergeKey(typedRecord);
       if (seenKeys.has(key)) return null;
@@ -303,6 +326,10 @@ export function countTrainingState(state: TrainingAppState) {
 }
 
 export function cloudCacheKey(accountScope: string) {
+  return `teacher-training-manager:v4:${accountScope}`;
+}
+
+export function previousCloudCacheKey(accountScope: string) {
   return `teacher-training-manager:v3:${accountScope}`;
 }
 
@@ -356,6 +383,14 @@ function normalizeRecord(
     completedDate: normalizeIsoDate(candidate.completedDate),
     provider: safeString(candidate.provider, 80),
     method: safeString(candidate.method, 20) || "기타",
+    certificateFileName: safeString(
+      candidate.certificateFileName,
+      CERTIFICATE_FILE_NAME_MAX_LENGTH,
+    ),
+    certificateStorageLocation: safeString(
+      candidate.certificateStorageLocation,
+      CERTIFICATE_STORAGE_LOCATION_MAX_LENGTH,
+    ),
     memo: safeString(candidate.memo, 600),
     guidance: safeString(candidate.guidance, 240),
     sourceName: optionalString(candidate.sourceName, 80),
@@ -411,7 +446,10 @@ function normalizeProfile(value: unknown, year: number): TeacherProfile | null {
   };
 }
 
-function isValidBackupRecord(value: unknown): value is TrainingRecord {
+function isValidBackupRecord(
+  value: unknown,
+  requiresCertificateFields: boolean,
+) {
   if (!value || typeof value !== "object" || Array.isArray(value)) return false;
   const record = value as Partial<TrainingRecord>;
   const validStatus = Object.keys(STATUS_LABELS).includes(record.status ?? "");
@@ -453,6 +491,38 @@ function isValidBackupRecord(value: unknown): value is TrainingRecord {
   if (
     record.templateKey !== undefined &&
     !validString(record.templateKey, 120, false)
+  ) {
+    return false;
+  }
+  if (
+    requiresCertificateFields &&
+    (!validString(
+      record.certificateFileName,
+      CERTIFICATE_FILE_NAME_MAX_LENGTH,
+    ) ||
+      !validString(
+        record.certificateStorageLocation,
+        CERTIFICATE_STORAGE_LOCATION_MAX_LENGTH,
+      ))
+  ) {
+    return false;
+  }
+  // v3 이하에서 만든 백업에는 수료증 필드가 없으므로 누락은 허용합니다.
+  if (
+    record.certificateFileName !== undefined &&
+    !validString(
+      record.certificateFileName,
+      CERTIFICATE_FILE_NAME_MAX_LENGTH,
+    )
+  ) {
+    return false;
+  }
+  if (
+    record.certificateStorageLocation !== undefined &&
+    !validString(
+      record.certificateStorageLocation,
+      CERTIFICATE_STORAGE_LOCATION_MAX_LENGTH,
+    )
   ) {
     return false;
   }

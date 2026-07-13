@@ -47,8 +47,24 @@ test("모바일 핵심 링크와 모달 키보드 접근성을 유지한다", as
   assert.match(manager, /localState:\s*latestAppStateRef\.current/);
   assert.match(manager, /activeDialogKey === "conflict"/);
   assert.match(manager, /parseTrainingBackupState\(rawState/);
+  assert.match(manager, /전남교육연수포털 과정 필터/);
+  assert.match(manager, /JEONNAM_TRAINING_PORTAL_URL/);
+  assert.match(manager, /certificateFileName/);
+  assert.match(manager, /certificateStorageLocation/);
+  assert.match(manager, /"수료증 파일명"/);
+  assert.match(manager, /"수료증 보관 위치"/);
+  assert.match(manager, /PREVIOUS_STORAGE_KEY/);
+  assert.match(manager, /previousCloudCacheKey/);
+  assert.match(
+    manager,
+    /setKindFilter\(value === "all" \? "all" : "required"\)/,
+  );
+  assert.match(manager, /certificateFileName:\s*""/);
+  assert.match(manager, /certificateStorageLocation:\s*""/);
   assert.match(dialogFocus, /event\.key !== "Tab"/);
   assert.match(dialogFocus, /previousFocus\.focus\(\)/);
   assert.doesNotMatch(globalCss, /\.row-actions a\s*\{\s*display:\s*none/);
+  assert.match(globalCss, /\.portal-course-tabs\s*\{/);
+  assert.match(globalCss, /\.certificate-details\s*\{[\s\S]*overflow-wrap:\s*anywhere/);
   assert.match(pagesCss, /\.github-pages-notice a\s*\{[\s\S]*display:\s*inline-flex/);
 });

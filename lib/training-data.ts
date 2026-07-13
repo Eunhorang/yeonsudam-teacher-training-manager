@@ -7,6 +7,9 @@ export type TrainingKind = "required" | "personal";
 export type ProfileApplicability = "applies" | "review" | "not-applicable";
 export type ApplicabilityOverride = "applies" | "not-applicable";
 
+export const CERTIFICATE_FILE_NAME_MAX_LENGTH = 160;
+export const CERTIFICATE_STORAGE_LOCATION_MAX_LENGTH = 240;
+
 export const TRAINING_CATEGORIES = [
   "학생 안전",
   "인권·복지",
@@ -33,6 +36,8 @@ export interface TrainingRecord {
   completedDate: string;
   provider: string;
   method: string;
+  certificateFileName: string;
+  certificateStorageLocation: string;
   memo: string;
   guidance: string;
   sourceName?: string;
@@ -76,8 +81,26 @@ export const JEONNAM_PORTAL_COURSE_BY_TEMPLATE_KEY = {
   "multicultural-understanding": 2,
 } as const;
 
+export const JEONNAM_TRAINING_PORTAL_URL = "https://www.jnstudy.kr/";
+
+export type JeonnamPortalCourse = 1 | 2;
+
 type JeonnamPortalTemplateKey =
   keyof typeof JEONNAM_PORTAL_COURSE_BY_TEMPLATE_KEY;
+
+export function getJeonnamPortalCourse(
+  templateKey?: string,
+): JeonnamPortalCourse | null {
+  if (
+    !templateKey ||
+    !Object.hasOwn(JEONNAM_PORTAL_COURSE_BY_TEMPLATE_KEY, templateKey)
+  ) {
+    return null;
+  }
+  return JEONNAM_PORTAL_COURSE_BY_TEMPLATE_KEY[
+    templateKey as JeonnamPortalTemplateKey
+  ];
+}
 
 function portalTrainingTitle(
   templateKey: JeonnamPortalTemplateKey,
@@ -419,6 +442,8 @@ export function createTrainingFromTemplate(
     completedDate: "",
     provider: "",
     method: "온라인",
+    certificateFileName: "",
+    certificateStorageLocation: "",
     memo: "",
     guidance: template.guidance,
     sourceName: template.sourceName,

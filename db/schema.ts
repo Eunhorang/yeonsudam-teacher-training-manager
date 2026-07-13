@@ -5,7 +5,7 @@ export const userTrainingStates = sqliteTable(
   "user_training_states",
   {
     userKey: text("user_key").primaryKey(),
-    schemaVersion: integer("schema_version").notNull().default(3),
+    schemaVersion: integer("schema_version").notNull().default(4),
     revision: integer("revision").notNull().default(1),
     stateJson: text("state_json").notNull(),
     createdAt: text("created_at").notNull(),
