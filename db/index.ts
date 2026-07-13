@@ -12,7 +12,7 @@ export async function ensureTrainingStateSchema(db: D1Database) {
     db.prepare(`
       CREATE TABLE IF NOT EXISTS user_training_states (
         user_key TEXT PRIMARY KEY NOT NULL,
-        schema_version INTEGER NOT NULL DEFAULT 3,
+        schema_version INTEGER NOT NULL DEFAULT 4,
         revision INTEGER NOT NULL DEFAULT 1,
         state_json TEXT NOT NULL,
         created_at TEXT NOT NULL,
