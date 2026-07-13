@@ -1,5 +1,6 @@
 import {
   createDefaultTrainings,
+  normalizeDefaultTrainingTitle,
   STATUS_LABELS,
   TRAINING_CATEGORIES,
   type ApplicabilityOverride,
@@ -335,11 +336,16 @@ function normalizeRecord(
     candidate.templateKey && parsedUpdatedAt === legacyFutureDefaultTimestamp
       ? new Date(0).toISOString()
       : parsedUpdatedAt ?? new Date().toISOString();
+  const templateKey = optionalString(candidate.templateKey, 120);
+  const title = normalizeDefaultTrainingTitle(
+    templateKey,
+    candidate.title.trim(),
+  );
 
   return {
     id: safeString(candidate.id, 160) || `imported-${year}-${index}`,
-    templateKey: optionalString(candidate.templateKey, 120),
-    title: candidate.title.trim().slice(0, 100),
+    templateKey,
+    title: title.slice(0, 100),
     category,
     kind,
     cycle: safeString(candidate.cycle, 40) || "자율",
