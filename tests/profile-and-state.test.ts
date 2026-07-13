@@ -2,7 +2,11 @@ import assert from "node:assert/strict";
 import test from "node:test";
 
 import { dueLabel, spreadsheetSafeValue } from "@/components/TrainingManager";
-import { createDefaultTrainings, type TrainingRecord } from "@/lib/training-data";
+import {
+  createDefaultTrainings,
+  JEONNAM_PORTAL_COURSE_BY_TEMPLATE_KEY,
+  type TrainingRecord,
+} from "@/lib/training-data";
 import {
   applyProfileRecommendations,
   createEmptyProfile,
@@ -28,6 +32,110 @@ function safetyRecord(year: number, hours: number, status: TrainingRecord["statu
   assert.ok(record);
   return { ...record, title: "사용자가 바꿈 제목", completedHours: hours, status };
 }
+
+test("전남교육연수포털 법정의무연수 과정명을 지정된 기본 연수명에 표시한다", () => {
+  const records = createDefaultTrainings(2026);
+  const expectedKeys = Object.keys(JEONNAM_PORTAL_COURSE_BY_TEMPLATE_KEY);
+  const expectedTitles: Record<string, string> = {
+    "violence-prevention":
+      "4대 폭력 예방교육 (전남교육연수포털 법정의무연수1)",
+    "anti-corruption":
+      "부패방지교육 (전남교육연수포털 법정의무연수1)",
+    "anti-bribery":
+      "청탁금지법 교육 (전남교육연수포털 법정의무연수1)",
+    "public-official-conduct":
+      "공무원 행동강령 교육 (전남교육연수포털 법정의무연수1)",
+    "emergency-welfare-report":
+      "긴급복지 신고의무자 교육 (전남교육연수포털 법정의무연수1)",
+    "disabled-abuse-report":
+      "장애인학대·장애인 대상 성범죄 신고의무자 교육 (전남교육연수포털 법정의무연수1)",
+    "social-disability-awareness":
+      "사회적 장애인식개선교육 (전남교육연수포털 법정의무연수1)",
+    "information-disclosure":
+      "정보공개 제도 교육 (전남교육연수포털 법정의무연수1)",
+    "child-abuse-report":
+      "아동학대 신고의무자 교육 (전남교육연수포털 법정의무연수1)",
+    "school-violence-semester-1":
+      "학교폭력 예방교육 · 1학기 (전남교육연수포털 법정의무연수2)",
+    "school-violence-semester-2":
+      "학교폭력 예방교육 · 2학기 (전남교육연수포털 법정의무연수2)",
+    "teacher-rights":
+      "교육활동 침해행위 예방교육 (전남교육연수포털 법정의무연수2)",
+    "character-education":
+      "인성교육 (전남교육연수포털 법정의무연수2)",
+    "suicide-prevention":
+      "자살예방·생명존중 교육 (전남교육연수포털 법정의무연수2)",
+    "conflict-of-interest":
+      "이해충돌방지법 교육 (전남교육연수포털 법정의무연수2)",
+    "multicultural-understanding":
+      "다문화 이해교육 (전남교육연수포털 법정의무연수2)",
+  };
+  const portalRecords = records.filter((record) =>
+    record.title.includes("전남교육연수포털 법정의무연수"),
+  );
+
+  assert.equal(portalRecords.length, 16);
+  assert.deepEqual(
+    portalRecords.map((record) => record.templateKey).sort(),
+    expectedKeys.sort(),
+  );
+  for (const record of portalRecords) {
+    assert.ok(record.templateKey);
+    const course =
+      JEONNAM_PORTAL_COURSE_BY_TEMPLATE_KEY[
+        record.templateKey as keyof typeof JEONNAM_PORTAL_COURSE_BY_TEMPLATE_KEY
+      ];
+    assert.match(
+      record.title,
+      new RegExp(`\\(전남교육연수포털 법정의무연수${course}\\)$`),
+    );
+    assert.equal(record.title, expectedTitles[record.templateKey]);
+  }
+  assert.equal(
+    portalRecords.filter((record) =>
+      record.templateKey?.startsWith("school-violence-semester-"),
+    ).length,
+    2,
+  );
+});
+
+test("기존 기본 연수명만 새 포털 과정명으로 바꾸고 사용자 제목은 보존한다", () => {
+  const defaults = createDefaultTrainings(2026);
+  const current = defaults.find(
+    (record) => record.templateKey === "violence-prevention",
+  );
+  const customBase = defaults.find(
+    (record) => record.templateKey === "anti-corruption",
+  );
+  assert.ok(current);
+  assert.ok(customBase);
+  const oldTitle = "4대 폭력 예방교육";
+  const legacyRecord = { ...current, title: oldTitle };
+  const customRecord = { ...customBase, title: "학교 자체 청렴 연수" };
+  const parsed = parseTrainingState({
+    version: 3,
+    activeYear: 2026,
+    recordsByYear: { "2026": [legacyRecord, customRecord] },
+    profilesByYear: {},
+  });
+
+  assert.ok(parsed);
+  assert.equal(
+    parsed.recordsByYear["2026"].find((record) => record.id === current.id)
+      ?.title,
+    "4대 폭력 예방교육 (전남교육연수포털 법정의무연수1)",
+  );
+  assert.equal(
+    parsed.recordsByYear["2026"].find((record) => record.id === customRecord.id)
+      ?.title,
+    customRecord.title,
+  );
+  assert.equal(
+    parsed.recordsByYear["2026"].find((record) => record.id === current.id)
+      ?.updatedAt,
+    current.updatedAt,
+  );
+});
 
 test("학교안전교육은 제목이 아닌 고정 키로 최근 3개 연도만 합산한다", () => {
   const summary = getSchoolSafetySummary(

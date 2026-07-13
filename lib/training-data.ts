@@ -55,12 +55,47 @@ export interface TrainingTemplate {
   sourceUrl?: string;
 }
 
+// 전남교육연수포털에서 한 과정으로 묶어 이수할 수 있는 기본 연수입니다.
+// 학교폭력 예방교육은 앱에서 학기별로 점검하므로 두 항목 모두 같은 과정 표시를 사용합니다.
+export const JEONNAM_PORTAL_COURSE_BY_TEMPLATE_KEY = {
+  "violence-prevention": 1,
+  "anti-corruption": 1,
+  "anti-bribery": 1,
+  "public-official-conduct": 1,
+  "emergency-welfare-report": 1,
+  "disabled-abuse-report": 1,
+  "social-disability-awareness": 1,
+  "information-disclosure": 1,
+  "child-abuse-report": 1,
+  "school-violence-semester-1": 2,
+  "school-violence-semester-2": 2,
+  "teacher-rights": 2,
+  "character-education": 2,
+  "suicide-prevention": 2,
+  "conflict-of-interest": 2,
+  "multicultural-understanding": 2,
+} as const;
+
+type JeonnamPortalTemplateKey =
+  keyof typeof JEONNAM_PORTAL_COURSE_BY_TEMPLATE_KEY;
+
+function portalTrainingTitle(
+  templateKey: JeonnamPortalTemplateKey,
+  title: string,
+) {
+  const course = JEONNAM_PORTAL_COURSE_BY_TEMPLATE_KEY[templateKey];
+  return `${title} (전남교육연수포털 법정의무연수${course})`;
+}
+
 // 법령·교육청 지침은 대상자와 지역에 따라 달라질 수 있습니다.
 // 따라서 기본 목록은 시작용 예시로 제공하고, 사용자가 모든 값을 수정할 수 있게 합니다.
 export const DEFAULT_TRAINING_TEMPLATES: TrainingTemplate[] = [
   {
     key: "school-violence-semester-1",
-    title: "학교폭력 예방교육 · 1학기",
+    title: portalTrainingTitle(
+      "school-violence-semester-1",
+      "학교폭력 예방교육 · 1학기",
+    ),
     category: "학생 안전",
     cycle: "학기별 1회",
     requiredHours: 0,
@@ -70,7 +105,10 @@ export const DEFAULT_TRAINING_TEMPLATES: TrainingTemplate[] = [
   },
   {
     key: "school-violence-semester-2",
-    title: "학교폭력 예방교육 · 2학기",
+    title: portalTrainingTitle(
+      "school-violence-semester-2",
+      "학교폭력 예방교육 · 2학기",
+    ),
     category: "학생 안전",
     cycle: "학기별 1회",
     requiredHours: 0,
@@ -100,7 +138,10 @@ export const DEFAULT_TRAINING_TEMPLATES: TrainingTemplate[] = [
   },
   {
     key: "child-abuse-report",
-    title: "아동학대 신고의무자 교육",
+    title: portalTrainingTitle(
+      "child-abuse-report",
+      "아동학대 신고의무자 교육",
+    ),
     category: "인권·복지",
     cycle: "매년 1시간",
     requiredHours: 1,
@@ -110,7 +151,10 @@ export const DEFAULT_TRAINING_TEMPLATES: TrainingTemplate[] = [
   },
   {
     key: "emergency-welfare-report",
-    title: "긴급복지 신고의무자 교육",
+    title: portalTrainingTitle(
+      "emergency-welfare-report",
+      "긴급복지 신고의무자 교육",
+    ),
     category: "인권·복지",
     cycle: "매년 1시간",
     requiredHours: 1,
@@ -120,7 +164,10 @@ export const DEFAULT_TRAINING_TEMPLATES: TrainingTemplate[] = [
   },
   {
     key: "disabled-abuse-report",
-    title: "장애인학대·장애인 대상 성범죄 신고의무자 교육",
+    title: portalTrainingTitle(
+      "disabled-abuse-report",
+      "장애인학대·장애인 대상 성범죄 신고의무자 교육",
+    ),
     category: "인권·복지",
     cycle: "매년 1시간",
     requiredHours: 1,
@@ -130,7 +177,10 @@ export const DEFAULT_TRAINING_TEMPLATES: TrainingTemplate[] = [
   },
   {
     key: "social-disability-awareness",
-    title: "사회적 장애인식개선교육",
+    title: portalTrainingTitle(
+      "social-disability-awareness",
+      "사회적 장애인식개선교육",
+    ),
     category: "인권·복지",
     cycle: "매년 1시간",
     requiredHours: 1,
@@ -140,7 +190,10 @@ export const DEFAULT_TRAINING_TEMPLATES: TrainingTemplate[] = [
   },
   {
     key: "suicide-prevention",
-    title: "자살예방·생명존중 교육",
+    title: portalTrainingTitle(
+      "suicide-prevention",
+      "자살예방·생명존중 교육",
+    ),
     category: "인권·복지",
     cycle: "매년 1회",
     requiredHours: 0,
@@ -150,7 +203,7 @@ export const DEFAULT_TRAINING_TEMPLATES: TrainingTemplate[] = [
   },
   {
     key: "violence-prevention",
-    title: "4대 폭력 예방교육",
+    title: portalTrainingTitle("violence-prevention", "4대 폭력 예방교육"),
     category: "폭력 예방",
     cycle: "매년 총 4시간",
     requiredHours: 4,
@@ -160,7 +213,10 @@ export const DEFAULT_TRAINING_TEMPLATES: TrainingTemplate[] = [
   },
   {
     key: "teacher-rights",
-    title: "교육활동 침해행위 예방교육",
+    title: portalTrainingTitle(
+      "teacher-rights",
+      "교육활동 침해행위 예방교육",
+    ),
     category: "교육 활동",
     cycle: "매년 1회",
     requiredHours: 0,
@@ -170,7 +226,7 @@ export const DEFAULT_TRAINING_TEMPLATES: TrainingTemplate[] = [
   },
   {
     key: "character-education",
-    title: "인성교육",
+    title: portalTrainingTitle("character-education", "인성교육"),
     category: "교육 활동",
     cycle: "매년 1시간",
     requiredHours: 1,
@@ -180,7 +236,7 @@ export const DEFAULT_TRAINING_TEMPLATES: TrainingTemplate[] = [
   },
   {
     key: "anti-corruption",
-    title: "부패방지교육",
+    title: portalTrainingTitle("anti-corruption", "부패방지교육"),
     category: "공직 윤리",
     cycle: "매년 2시간",
     requiredHours: 2,
@@ -190,7 +246,7 @@ export const DEFAULT_TRAINING_TEMPLATES: TrainingTemplate[] = [
   },
   {
     key: "anti-bribery",
-    title: "청탁금지법 교육",
+    title: portalTrainingTitle("anti-bribery", "청탁금지법 교육"),
     category: "공직 윤리",
     cycle: "매년 1회",
     requiredHours: 0,
@@ -200,7 +256,10 @@ export const DEFAULT_TRAINING_TEMPLATES: TrainingTemplate[] = [
   },
   {
     key: "conflict-of-interest",
-    title: "이해충돌방지법 교육",
+    title: portalTrainingTitle(
+      "conflict-of-interest",
+      "이해충돌방지법 교육",
+    ),
     category: "공직 윤리",
     cycle: "매년 1회",
     requiredHours: 0,
@@ -210,7 +269,10 @@ export const DEFAULT_TRAINING_TEMPLATES: TrainingTemplate[] = [
   },
   {
     key: "public-official-conduct",
-    title: "공무원 행동강령 교육",
+    title: portalTrainingTitle(
+      "public-official-conduct",
+      "공무원 행동강령 교육",
+    ),
     category: "공직 윤리",
     cycle: "매년 1회",
     requiredHours: 0,
@@ -220,7 +282,10 @@ export const DEFAULT_TRAINING_TEMPLATES: TrainingTemplate[] = [
   },
   {
     key: "information-disclosure",
-    title: "정보공개 제도 교육",
+    title: portalTrainingTitle(
+      "information-disclosure",
+      "정보공개 제도 교육",
+    ),
     category: "정보 보호",
     cycle: "매년 1회",
     requiredHours: 0,
@@ -278,7 +343,10 @@ export const DEFAULT_TRAINING_TEMPLATES: TrainingTemplate[] = [
   },
   {
     key: "multicultural-understanding",
-    title: "다문화 이해교육",
+    title: portalTrainingTitle(
+      "multicultural-understanding",
+      "다문화 이해교육",
+    ),
     category: "교육 활동",
     cycle: "교육청 확인",
     requiredHours: 0,
@@ -302,6 +370,31 @@ export function createDefaultTrainings(year: number): TrainingRecord[] {
   return DEFAULT_TRAINING_TEMPLATES.map((template) =>
     createTrainingFromTemplate(template, year),
   );
+}
+
+// 이전 버전의 기본 제목과 정확히 같은 경우에만 새 포털 과정명을 붙입니다.
+// 사용자가 직접 바꾼 제목과 수정 시각은 그대로 보존합니다.
+export function normalizeDefaultTrainingTitle(
+  templateKey: string | undefined,
+  title: string,
+) {
+  if (
+    !templateKey ||
+    !Object.hasOwn(JEONNAM_PORTAL_COURSE_BY_TEMPLATE_KEY, templateKey)
+  ) {
+    return title;
+  }
+  const template = DEFAULT_TRAINING_TEMPLATES.find(
+    (item) => item.key === templateKey,
+  );
+  if (!template) return title;
+  const course =
+    JEONNAM_PORTAL_COURSE_BY_TEMPLATE_KEY[
+      templateKey as JeonnamPortalTemplateKey
+    ];
+  const suffix = ` (전남교육연수포털 법정의무연수${course})`;
+  const previousDefaultTitle = template.title.slice(0, -suffix.length);
+  return title === previousDefaultTitle ? template.title : title;
 }
 
 export function createTrainingFromTemplate(

@@ -56,6 +56,10 @@ test("연수담 첫 화면을 서버에서 정상 렌더링한다", async () => 
   assert.match(html, /<title>연수담 \| 초등교사 연수관리<\/title>/i);
   assert.match(html, /올해의 연수/);
   assert.match(html, /아동학대 신고의무자 교육/);
+  assert.match(
+    html,
+    /4대 폭력 예방교육 \(전남교육연수포털 법정의무연수1\)/,
+  );
   assert.match(html, /연수 추가/);
   assert.match(html, /로그인 전에는 이 브라우저에만 저장됩니다/);
   assert.match(html, /내 근무 조건을 설정해 주세요/);
